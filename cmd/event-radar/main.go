@@ -43,7 +43,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	app := radar.New(config, store, radar.SourcesFromConfig(config))
 	ctx := context.Background()
 

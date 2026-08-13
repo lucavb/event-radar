@@ -20,7 +20,7 @@ func OpenStore(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	store := &Store{db: db}
 	if err := store.migrate(context.Background()); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return store, nil
@@ -122,7 +122,7 @@ func (s *Store) UpcomingEvents(ctx context.Context, from time.Time) ([]Event, er
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var events []Event
 	for rows.Next() {
 		var event Event
@@ -164,7 +164,7 @@ func (s *Store) SourceHealth(ctx context.Context) ([]SourceHealth, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var output []SourceHealth
 	for rows.Next() {
 		var h SourceHealth
@@ -253,7 +253,7 @@ func (s *Store) Candidates(ctx context.Context, includeRejected bool) ([]Candida
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var output []Candidate
 	for rows.Next() {
 		var candidate Candidate
@@ -311,7 +311,7 @@ func (s *Store) Candidate(ctx context.Context, rawURL string) (Candidate, error)
 	if err != nil {
 		return Candidate{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
 			return Candidate{}, err
@@ -352,7 +352,7 @@ func (s *Store) CandidateCounts(ctx context.Context) (map[string]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	counts := map[string]int{}
 	for rows.Next() {
 		var status string

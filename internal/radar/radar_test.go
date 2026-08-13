@@ -34,7 +34,7 @@ func TestStoreDeduplicatesByTitleTimeAndLocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(func() { _ = store.Close() })
 	startsAt := time.Date(2026, 9, 17, 16, 0, 0, 0, time.UTC)
 	first := Event{Source: "one", SourceID: "a", Title: "Event", Location: "Munich", StartsAt: startsAt, EndsAt: startsAt.Add(time.Hour), Status: StatusConfirmed}
 	second := first
@@ -118,7 +118,7 @@ func TestCandidateUpsertRefreshesVerificationState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(func() { _ = store.Close() })
 	candidate := Candidate{Source: "searxng-discovery", URL: "https://example.test/event", Title: "Event", Status: CandidatePending, Verification: "unverified"}
 	if err := store.UpsertCandidate(context.Background(), candidate); err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestUnverifiedCandidateRemainsReviewable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(func() { _ = store.Close() })
 	candidate := Candidate{Source: "discovery", URL: "https://example.test/event", Title: "Event", Verification: CandidateUnverified}
 	if err := store.UpsertCandidate(context.Background(), candidate); err != nil {
 		t.Fatal(err)

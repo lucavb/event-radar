@@ -140,20 +140,20 @@ func (s GeminiSource) request(ctx context.Context, prompt string, schema map[str
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return nil, fmt.Errorf("Gemini search: %s", response.Status)
+		return nil, fmt.Errorf("gemini search: %s", response.Status)
 	}
 	var envelope geminiEnvelope
 	if err := json.NewDecoder(io.LimitReader(response.Body, 5<<20)).Decode(&envelope); err != nil {
 		return nil, err
 	}
 	if len(envelope.Candidates) == 0 || len(envelope.Candidates[0].Content.Parts) == 0 {
-		return nil, fmt.Errorf("Gemini search returned no candidate text")
+		return nil, fmt.Errorf("gemini search returned no candidate text")
 	}
 	var result map[string]any
 	if err := json.Unmarshal([]byte(structuredJSON(envelope.Candidates[0].Content.Parts[0].Text)), &result); err != nil {
-		return nil, fmt.Errorf("Gemini structured response: %w", err)
+		return nil, fmt.Errorf("gemini structured response: %w", err)
 	}
 	return result, nil
 }

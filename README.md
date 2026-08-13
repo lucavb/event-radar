@@ -79,6 +79,13 @@ prefix.
 docker build -t event-radar:local .
 ```
 
+Images are published to GHCR on every push to `main` (tagged by commit SHA):
+
+```sh
+docker pull ghcr.io/lucavb/event-radar:sha-<commit>
+docker run --env-file .env -p 8080:8080 ghcr.io/lucavb/event-radar:sha-<commit>
+```
+
 The repository contains no deployment, DNS, backup, or calendar-subscription
 automation.
 

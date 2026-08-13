@@ -152,7 +152,7 @@ func (c Config) Validate() error {
 	geminiConfigured := c.GeminiEndpoint != "" || c.GeminiAPIKey != "" || c.GeminiToken != ""
 	if geminiConfigured {
 		if c.GeminiEndpoint == "" || (c.GeminiAPIKey == "" && c.GeminiToken == "") {
-			return fmt.Errorf("Gemini requires RADAR_GEMINI_ENDPOINT and an API key or token")
+			return fmt.Errorf("gemini requires RADAR_GEMINI_ENDPOINT and an API key or token")
 		}
 		if len(cleanList(c.GeminiDiscoveryQueries)) == 0 || c.EventCriteria == "" {
 			return fmt.Errorf("RADAR_GEMINI_DISCOVERY_QUERIES and RADAR_EVENT_CRITERIA are required for Gemini")

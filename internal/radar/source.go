@@ -41,7 +41,7 @@ func (s ICSFeedSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) 
 	if err != nil {
 		return nil, nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return nil, nil, fmt.Errorf("GET %s: %s", s.endpoint, response.Status)
 	}
@@ -117,7 +117,7 @@ func (s SearXNGSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) 
 			Unresponsive [][]string `json:"unresponsive_engines"`
 		}
 		decodeErr := json.NewDecoder(io.LimitReader(response.Body, 5<<20)).Decode(&payload)
-		response.Body.Close()
+		_ = response.Body.Close()
 		requestCancel()
 		if response.StatusCode < 200 || response.StatusCode > 299 {
 			failures = append(failures, response.Status)
@@ -180,7 +180,7 @@ func (s AIThinkererSource) Fetch(ctx context.Context) ([]Event, []Candidate, err
 	if err != nil {
 		return nil, nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return nil, nil, fmt.Errorf("AI Tinkerers API: %s", response.Status)
 	}
