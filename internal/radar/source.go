@@ -338,16 +338,17 @@ func splitICSLine(line string) (string, string, bool) {
 	if index < 0 {
 		return "", "", false
 	}
-	rawKey := strings.ToUpper(line[:index])
+	rawKeyPart := line[:index]
+	rawKey := strings.ToUpper(rawKeyPart)
 	key := rawKey
 	if parameterIndex := strings.IndexByte(key, ';'); parameterIndex >= 0 {
 		key = key[:parameterIndex]
 	}
 	value := line[index+1:]
-	if (key == "DTSTART" || key == "DTEND") && strings.Contains(rawKey, "TZID=") {
-		for _, parameter := range strings.Split(rawKey, ";")[1:] {
-			if zone, ok := strings.CutPrefix(parameter, "TZID="); ok {
-				value = "[TZID=" + zone + "]" + value
+	if key == "DTSTART" || key == "DTEND" {
+		for _, parameter := range strings.Split(rawKeyPart, ";")[1:] {
+			if eqIdx := strings.IndexByte(parameter, '='); eqIdx > 0 && strings.EqualFold(parameter[:eqIdx], "TZID") {
+				value = "[TZID=" + parameter[eqIdx+1:] + "]" + value
 				break
 			}
 		}
