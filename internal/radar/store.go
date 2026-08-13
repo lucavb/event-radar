@@ -144,7 +144,8 @@ func (s *Store) UpcomingEvents(ctx context.Context, from time.Time) ([]Event, er
 func (s *Store) PruneCandidates(ctx context.Context, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM candidates
 		WHERE status <> 'approved'
-		AND (verification <> 'verified' OR start_time = '' OR start_time <= ?)`,
+		AND verification = 'verified'
+		AND start_time <> '' AND start_time <= ?`,
 		now.UTC().Format(time.RFC3339))
 	return err
 }

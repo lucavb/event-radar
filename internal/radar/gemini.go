@@ -2,8 +2,6 @@ package radar
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,12 +13,15 @@ import (
 )
 
 type GeminiSource struct {
-	endpoint string
-	model    string
-	apiKey   string
-	token    string
-	timeout  time.Duration
-	client   *http.Client
+	endpoint         string
+	apiKey           string
+	token            string
+	timeout          time.Duration
+	discoveryQueries []string
+	criteria         string
+	timezone         string
+	weights          map[string]int
+	client           *http.Client
 }
 
 func (s GeminiSource) Name() string  { return "gemini-discovery" }
@@ -35,12 +36,8 @@ func (s GeminiSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) {
 	// consume the entire sync deadline.
 	ctx, cancel := context.WithTimeout(ctx, 2*s.timeout+time.Minute)
 	defer cancel()
-	queries := []string{
-		"Find specific upcoming in-person AI, AI-agent, LLM, and software developer events in Munich in the next 90 days. Return direct event pages only.",
-		"Find specific upcoming Munich events for AI builders, agents, machine learning, or software developers. Exclude group homepages and listings; return event occurrence URLs.",
-	}
 	var candidates []Candidate
-	for _, query := range queries {
+	for _, query := range s.discoveryQueries {
 		requestCtx, requestCancel := context.WithTimeout(ctx, s.timeout)
 		found, err := s.discover(requestCtx, query)
 		requestCancel()
@@ -204,7 +201,7 @@ func (s GeminiSource) discover(ctx context.Context, prompt string) ([]Candidate,
 		if rawURL == "" {
 			continue
 		}
-		score := relevanceScore(title + " " + snippet)
+		score := relevanceScore(title+" "+snippet, s.weights)
 		output = append(output, Candidate{Source: s.Name(), Title: title, URL: rawURL, Snippet: snippet, Score: score, Discovered: now})
 	}
 	return output, nil
@@ -223,7 +220,11 @@ func (s GeminiSource) verify(ctx context.Context, candidate Candidate) (Candidat
 		"confidence":        map[string]any{"type": "string"},
 		"rejection_reason":  map[string]any{"type": "string"},
 	}, "required": []string{"is_specific_event", "title", "start_time", "end_time", "location", "event_page_url", "date_evidence", "location_evidence", "confidence", "rejection_reason"}}
-	prompt := fmt.Sprintf("Verify this exact event page: %s. Today is %s. Accept only one specific future in-person AI or software-builder event in Munich with explicit date, start time, and venue. Copy short verbatim date and venue evidence. Do not infer missing facts.", candidate.URL, time.Now().Format("2006-01-02"))
+	zone, err := time.LoadLocation(s.timezone)
+	if err != nil {
+		zone = time.UTC
+	}
+	prompt := fmt.Sprintf("Verify this exact event page: %s. Today is %s. Accept only one specific future event matching this criteria: %s. Require an explicit date, start time, venue or location, event URL, and short verbatim date and location evidence. Do not infer missing facts.", candidate.URL, time.Now().In(zone).Format("2006-01-02"), s.criteria)
 	result, err := s.request(ctx, prompt, schema, []map[string]any{{"url_context": map[string]any{}}})
 	if err != nil {
 		return candidate, err
@@ -278,9 +279,4 @@ func canonicalURL(raw string) string {
 	parsed.Host = strings.ToLower(parsed.Host)
 	parsed.Scheme = strings.ToLower(parsed.Scheme)
 	return strings.TrimRight(parsed.String(), "/")
-}
-
-func candidateHash(value string) string {
-	hash := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(hash[:8])
 }

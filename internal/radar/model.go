@@ -56,11 +56,12 @@ type Candidate struct {
 }
 
 const (
-	CandidatePending  = "pending"
-	CandidateApproved = "approved"
-	CandidateRejected = "rejected"
-	CandidateVerified = "verified"
-	CandidateFailed   = "failed"
+	CandidatePending    = "pending"
+	CandidateApproved   = "approved"
+	CandidateRejected   = "rejected"
+	CandidateVerified   = "verified"
+	CandidateFailed     = "failed"
+	CandidateUnverified = "unverified"
 )
 
 type SourceHealth struct {
@@ -74,7 +75,7 @@ type SourceHealth struct {
 func EventUID(source, sourceID, title string, startsAt time.Time) string {
 	value := source + "|" + sourceID + "|" + strings.ToLower(strings.TrimSpace(title)) + "|" + startsAt.UTC().Format(time.RFC3339)
 	hash := sha256.Sum256([]byte(value))
-	return "munich-events-" + hex.EncodeToString(hash[:12])
+	return "event-radar-" + hex.EncodeToString(hash[:12])
 }
 
 func EventFingerprint(event Event) string {

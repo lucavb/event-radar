@@ -1,93 +1,87 @@
-# Munich Event Radar
+# Event Radar
 
-Personal, local-first event radar for relevant Munich AI, agent and developer
-meetups. It collects public calendars, stores normalized events in SQLite and
-exposes a single iCalendar feed. No deployment configuration is included.
+Event Radar is a local-first event aggregator. It imports configured
+iCalendar feeds and optional API sources into SQLite, optionally discovers
+candidate events through SearXNG or Gemini, and serves one calendar feed with
+an optional email digest.
 
-## Sources
+It is not tied to a city, language, or topic. Gemini is optional; the core
+aggregator does not require an AI provider.
 
-| Source | Ingestion | State |
-| --- | --- | --- |
-| OpenClaw Munich | Official Luma ICS | Active |
-| Claude Code Munich | Claude Community Luma ICS, filtered to Munich, plus a tentative known-event seed | Active |
-| AI Agents Munich | Public Meetup ICS | Active |
-| Munich AI Developers Group | Public Meetup ICS | Active |
-| AI Tinkerers Munich | Official Agents API | Disabled until attendance unlocks API access |
-| New series | Optional SearXNG candidate discovery | Optional |
+## Pipeline
 
-The application does not bypass bot protection and does not automate RSVPs.
-Search results are unverified until explicitly approved in the review page.
+Configured feeds are treated as anchored events. Discovery results are stored
+as candidates. Gemini can verify a candidate's exact page and supply explicit
+date, location, and evidence. Candidates are never published automatically:
+use the authenticated review page to approve them.
 
-## Local setup
+Without Gemini, SearXNG candidates remain visible as `unverified` candidates,
+but cannot be approved until they contain verification evidence.
+
+## Quick start
 
 ```sh
 cp config.example.env .env
 set -a && . ./.env && set +a
-go run ./cmd/munich-events check-config
-go run ./cmd/munich-events sync
-go run ./cmd/munich-events digest --dry-run
-go run ./cmd/munich-events run
+go run ./cmd/event-radar check-config
+go run ./cmd/event-radar sync
+go run ./cmd/event-radar digest --dry-run
+go run ./cmd/event-radar run
 ```
 
-The feed is then available at:
+The calendar is available at:
 
 ```text
 http://127.0.0.1:8080/calendar/<RADAR_FEED_TOKEN>.ics
 ```
 
-Useful endpoints:
+Endpoints:
 
-- `/healthz` returns failure when an enabled source most recently failed.
-- `/status` lists per-source health, including
-  `disabled_pending_attendance` for AI Tinkerers.
-- `/metrics` returns basic Prometheus metrics.
-- `/admin?token=<RADAR_ADMIN_TOKEN>` shows discovered candidates and allows
-  approval or rejection. Keep this token separate from the calendar feed token.
+- `/healthz` reports source failures.
+- `/status` reports source health and candidate counts.
+- `/metrics` exposes Prometheus gauges.
+- `/admin?token=<RADAR_ADMIN_TOKEN>` reviews candidates.
 
-## Discovery and verification
+## Configuration
 
-SearXNG is a broad discovery source. It must have JSON output enabled:
+Structured values use JSON so URLs and search text do not depend on custom
+delimiter escaping.
 
-```yaml
-search:
-  formats:
-    - html
-    - json
-```
+- `RADAR_ICS_FEEDS`: JSON objects with `name`, `url`, `anchor`,
+  `filter_location`, and `force_confirmed`.
+- `RADAR_LOCATION_ALIASES`: aliases used by filtered feeds.
+- `RADAR_EVENT_CRITERIA`: scope passed to Gemini verification.
+- `RADAR_SEARXNG_URL` and `RADAR_SEARXNG_QUERIES`: optional discovery.
+- `RADAR_GEMINI_ENDPOINT`, one of `RADAR_GEMINI_API_KEY` or
+  `RADAR_GEMINI_TOKEN`, and `RADAR_GEMINI_DISCOVERY_QUERIES`: optional
+  discovery and verification.
+- `RADAR_RELEVANCE_WEIGHTS`: JSON object of lowercase terms and positive
+  integer weights.
+- `RADAR_APP_NAME`, `RADAR_CALENDAR_PRODID`, and `RADAR_TIMEZONE`: output
+  branding and formatting.
+- `RADAR_ADMIN_TOKEN`: separate token for candidate moderation.
+- `RADAR_SMTP_*` and `RADAR_DIGEST_RECIPIENT`: optional digest delivery.
 
-The optional Gemini source uses two requests: Google Search finds likely direct
-event URLs, then URL Context verifies each page into structured fields and
-evidence. Configure `RADAR_GEMINI_ENDPOINT` with the full `generateContent`
-endpoint. A direct Google endpoint can use `RADAR_GEMINI_API_KEY`; a proxy such
-as TAIA can use `RADAR_GEMINI_TOKEN`. The application never publishes these
-machine-generated events automatically: review them at `/admin`.
+See [`config.example.env`](config.example.env) for a generic configuration.
+The original Munich AI use case is available at
+[`examples/munich-ai`](examples/munich-ai).
 
-## Delivery
+## Storage and delivery
 
-`digest --dry-run` only writes the digest to stdout. Real delivery requires
-SMTP configuration and is intentionally opt-in. The SMTP values are compatible
-with iCloud Mail's `smtp.mail.me.com:587` and an app-specific password.
+SQLite stores events, source health, candidates, and delivery hashes. The
+digest is opt-in and `digest --dry-run` never sends email. Existing databases
+retain their event UIDs; newly created events use the `event-radar-` UID
+prefix.
 
-The database stores a digest content hash, so a configured delivery is skipped
-when the digest has not changed.
-
-## AI Tinkerers activation
-
-The account screenshot confirms that the API is suspended until an AI
-Tinkerers event has been attended in the previous 90 days. After attendance:
-
-1. Create a static `sk_…` Agent API key on
-   <https://aitinkerers.org/developers/api-keys>.
-2. Put it in `RADAR_AI_TINKERERS_API_KEY`.
-3. Enable the API adapter in a follow-up change; its credentials must be
-   supplied by the later deployment's secret store, never committed.
-
-## Container build
+## Container
 
 ```sh
-docker build -t munich-events:local .
+docker build -t event-radar:local .
 ```
 
-The Dockerfile is a portable build artifact only. Kubernetes, DNS, backups,
-Apple Calendar subscription and infrastructure automation are deliberately
-outside this repository and this scope.
+The repository contains no deployment, DNS, backup, or calendar-subscription
+automation.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).

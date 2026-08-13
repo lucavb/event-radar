@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -21,12 +20,12 @@ type Source interface {
 }
 
 type ICSFeedSource struct {
-	name           string
-	endpoint       string
-	anchor         bool
-	matchMunich    bool
-	forceConfirmed bool
-	client         *http.Client
+	name            string
+	endpoint        string
+	anchor          bool
+	locationAliases []string
+	forceConfirmed  bool
+	client          *http.Client
 }
 
 func (s ICSFeedSource) Name() string  { return s.name }
@@ -37,7 +36,7 @@ func (s ICSFeedSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) 
 	if err != nil {
 		return nil, nil, err
 	}
-	request.Header.Set("User-Agent", "munich-events/0.1 (+local personal event radar)")
+	request.Header.Set("User-Agent", "event-radar/1.0")
 	response, err := s.client.Do(request)
 	if err != nil {
 		return nil, nil, err
@@ -54,8 +53,8 @@ func (s ICSFeedSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) 
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse %s: %w", s.name, err)
 	}
-	if s.matchMunich {
-		events = filterMunich(events)
+	if len(s.locationAliases) > 0 {
+		events = filterByLocation(events, s.locationAliases)
 	}
 	if s.forceConfirmed {
 		for index := range events {
@@ -67,6 +66,8 @@ func (s ICSFeedSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) 
 
 type SearXNGSource struct {
 	endpoint string
+	queries  []string
+	weights  map[string]int
 	client   *http.Client
 }
 
@@ -82,16 +83,10 @@ func (s SearXNGSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) 
 	if !s.Enabled() {
 		return nil, nil, nil
 	}
-	queries := []string{
-		"Munich AI meetup event 2026",
-		"München KI Meetup Veranstaltung 2026",
-		"Munich AI agents developer meetup September 2026",
-		"site:luma.com Munich AI meetup 2026",
-	}
 	seen := map[string]bool{}
 	var candidates []Candidate
 	var failures []string
-	for _, rawQuery := range queries {
+	for _, rawQuery := range s.queries {
 		target, err := url.Parse(s.endpoint + "/search")
 		if err != nil {
 			return nil, nil, err
@@ -108,7 +103,7 @@ func (s SearXNGSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) 
 			requestCancel()
 			return nil, nil, err
 		}
-		request.Header.Set("User-Agent", "munich-events/0.1 (+local personal event radar)")
+		request.Header.Set("User-Agent", "event-radar/1.0")
 		response, err := s.client.Do(request)
 		if err != nil {
 			requestCancel()
@@ -143,7 +138,7 @@ func (s SearXNGSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) 
 		}
 		for _, result := range payload.Results {
 			result.URL = canonicalURL(result.URL)
-			score := relevanceScore(result.Title + " " + result.Content)
+			score := relevanceScore(result.Title+" "+result.Content, s.weights)
 			if score < 2 || result.URL == "" || seen[result.URL] {
 				continue
 			}
@@ -160,26 +155,19 @@ func (s SearXNGSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) 
 	return nil, candidates, nil
 }
 
-type DisabledAIThinkererSource struct{}
-
-func (DisabledAIThinkererSource) Name() string  { return "ai-tinkerers-munich" }
-func (DisabledAIThinkererSource) Enabled() bool { return false }
-func (DisabledAIThinkererSource) Fetch(context.Context) ([]Event, []Candidate, error) {
-	return nil, nil, nil
-}
-
 type AIThinkererSource struct {
 	apiKey string
+	query  string
 	client *http.Client
 }
 
-func (s AIThinkererSource) Name() string  { return "ai-tinkerers-munich" }
+func (s AIThinkererSource) Name() string  { return "ai-tinkerers" }
 func (s AIThinkererSource) Enabled() bool { return s.apiKey != "" }
 
 func (s AIThinkererSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) {
 	target, _ := url.Parse("https://aitinkerers.org/api/agents/v1/meetups/search")
 	query := target.Query()
-	query.Set("query", "Munich")
+	query.Set("query", s.query)
 	query.Set("status", "upcoming")
 	query.Set("limit", "100")
 	target.RawQuery = query.Encode()
@@ -244,7 +232,7 @@ func aiThinkererEvent(record map[string]any) (Event, bool) {
 	eventURL, _ := firstString(record, "url", "public_url")
 	location, _ := firstString(record, "location_name", "location", "venue")
 	event := Event{
-		Source: "ai-tinkerers-munich", SourceID: sourceID, Title: title, Location: location,
+		Source: "ai-tinkerers", SourceID: sourceID, Title: title, Location: location,
 		URL: eventURL, StartsAt: startsAt, EndsAt: endsAt, Status: StatusConfirmed, Anchor: true, Score: 100,
 	}
 	event.UID = EventUID(event.Source, event.SourceID, event.Title, event.StartsAt)
@@ -271,25 +259,26 @@ func firstString(record map[string]any, keys ...string) (string, bool) {
 	return "", false
 }
 
-func DefaultSources(config Config) []Source {
+func SourcesFromConfig(config Config) []Source {
 	client := &http.Client{Timeout: config.HTTPTimeout}
-	sources := []Source{
-		ICSFeedSource{name: "openclaw-munich", endpoint: config.OpenClawICS, anchor: true, forceConfirmed: true, client: client},
-		ICSFeedSource{name: "claude-code-munich", endpoint: config.ClaudeICS, anchor: true, matchMunich: true, client: client},
-		ICSFeedSource{name: "ai-agents-munich", endpoint: config.AIAgentsICS, anchor: true, client: client},
-		ICSFeedSource{name: "munich-ai-developers-group", endpoint: config.AIDevICS, anchor: true, client: client},
+	sources := make([]Source, 0, len(config.ICSFeeds)+3)
+	aliases := cleanList(config.LocationAliases)
+	for _, feed := range config.ICSFeeds {
+		feedAliases := []string(nil)
+		if feed.FilterLocation {
+			feedAliases = aliases
+		}
+		sources = append(sources, ICSFeedSource{name: feed.Name, endpoint: feed.URL, anchor: feed.Anchor, locationAliases: feedAliases, forceConfirmed: feed.ForceConfirmed, client: client})
 	}
-	if config.AIThinkererKey == "" {
-		sources = append(sources, DisabledAIThinkererSource{})
-	} else {
-		sources = append(sources, AIThinkererSource{apiKey: config.AIThinkererKey, client: client})
+	if config.AITinkerersKey != "" {
+		sources = append(sources, AIThinkererSource{apiKey: config.AITinkerersKey, query: config.AITinkerersQuery, client: client})
 	}
 	if config.SearXNGURL != "" {
-		sources = append(sources, SearXNGSource{endpoint: config.SearXNGURL, client: client})
+		sources = append(sources, SearXNGSource{endpoint: config.SearXNGURL, queries: config.SearXNGQueries, weights: config.RelevanceWeights, client: client})
 	}
 	if config.GeminiEndpoint != "" {
 		sources = append(sources, GeminiSource{
-			endpoint: config.GeminiEndpoint, model: config.GeminiModel,
+			endpoint: config.GeminiEndpoint, discoveryQueries: config.GeminiDiscoveryQueries, criteria: config.EventCriteria, timezone: config.Timezone, weights: config.RelevanceWeights,
 			apiKey: config.GeminiAPIKey, token: config.GeminiToken,
 			timeout: config.GeminiTimeout, client: &http.Client{Timeout: config.GeminiTimeout},
 		})
@@ -415,12 +404,15 @@ func parseICSDate(value string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("invalid iCalendar timestamp %q", value)
 }
 
-func filterMunich(events []Event) []Event {
+func filterByLocation(events []Event, aliases []string) []Event {
 	filtered := make([]Event, 0, len(events))
 	for _, event := range events {
 		text := strings.ToLower(event.Title + " " + event.Location + " " + event.Description)
-		if strings.Contains(text, "munich") || strings.Contains(text, "münchen") {
-			filtered = append(filtered, event)
+		for _, alias := range aliases {
+			if strings.Contains(text, alias) {
+				filtered = append(filtered, event)
+				break
+			}
 		}
 	}
 	return filtered
@@ -433,13 +425,13 @@ func unescapeICS(value string) string {
 
 var wordPattern = regexp.MustCompile(`[[:alnum:]]+`)
 
-func relevanceScore(text string) int {
-	terms := map[string]int{"ai": 2, "agent": 2, "claude": 2, "llm": 2, "developer": 1, "coding": 1, "machine": 1, "munich": 1, "münchen": 1}
+func relevanceScore(text string, terms map[string]int) int {
+	if len(terms) == 0 && strings.TrimSpace(text) != "" {
+		return 2
+	}
 	score := 0
 	for _, word := range wordPattern.FindAllString(strings.ToLower(text), -1) {
 		score += terms[word]
 	}
 	return score
 }
-
-func parsePort(value string) (int, error) { return strconv.Atoi(value) }

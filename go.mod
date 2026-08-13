@@ -1,4 +1,4 @@
-module github.com/lucabecker/munich-events
+module github.com/lucabecker/event-radar
 
 go 1.26.5
 

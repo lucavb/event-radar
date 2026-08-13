@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-func RenderICS(events []Event) string {
+func RenderICS(config Config, events []Event) string {
 	var builder strings.Builder
-	builder.WriteString("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Luca Becker//Munich Event Radar//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Munich Event Radar\r\nX-WR-TIMEZONE:Europe/Berlin\r\n")
+	builder.WriteString("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:" + config.CalendarProdID + "\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:" + config.AppName + "\r\nX-WR-TIMEZONE:" + config.Timezone + "\r\n")
 	for _, event := range events {
 		builder.WriteString("BEGIN:VEVENT\r\n")
 		writeICS(&builder, "UID", event.UID)
@@ -40,7 +40,7 @@ func writeICS(builder *strings.Builder, key, value string) {
 	fmt.Fprintf(builder, "%s:%s\r\n", key, value)
 }
 
-func BuildDigest(events []Event, now time.Time) string {
+func BuildDigest(config Config, events []Event, now time.Time) string {
 	var upcoming []Event
 	limit := now.AddDate(0, 0, 56)
 	for _, event := range events {
@@ -50,13 +50,17 @@ func BuildDigest(events []Event, now time.Time) string {
 	}
 	sort.Slice(upcoming, func(i, j int) bool { return upcoming[i].StartsAt.Before(upcoming[j].StartsAt) })
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "Munich Event Radar — %d upcoming event(s)\n\n", len(upcoming))
+	fmt.Fprintf(&builder, "%s — %d upcoming event(s)\n\n", config.AppName, len(upcoming))
+	location, err := time.LoadLocation(config.Timezone)
+	if err != nil {
+		location = time.UTC
+	}
 	for _, event := range upcoming {
 		tentative := ""
 		if event.Status == StatusTentative {
 			tentative = " [TENTATIVE]"
 		}
-		fmt.Fprintf(&builder, "%s%s\n%s · %s\n%s\n%s\n\n", event.Title, tentative, event.StartsAt.In(time.FixedZone("CEST", 2*3600)).Format("Mon, 02 Jan 15:04"), event.Location, event.URL, event.Source)
+		fmt.Fprintf(&builder, "%s%s\n%s · %s\n%s\n%s\n\n", event.Title, tentative, event.StartsAt.In(location).Format("Mon, 02 Jan 15:04"), event.Location, event.URL, event.Source)
 	}
 	return builder.String()
 }
@@ -78,6 +82,6 @@ func SendDigest(config Config, content string, dryRun bool) error {
 		return fmt.Errorf("RADAR_SMTP_HOST must be host:port")
 	}
 	auth := smtp.PlainAuth("", config.SMTPUsername, config.SMTPPassword, host)
-	message := []byte("To: " + config.DigestRecipient + "\r\nFrom: " + config.SMTPFrom + "\r\nSubject: Munich Event Radar\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + content)
+	message := []byte("To: " + config.DigestRecipient + "\r\nFrom: " + config.SMTPFrom + "\r\nSubject: " + config.AppName + "\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + content)
 	return smtp.SendMail(config.SMTPHost, auth, config.SMTPFrom, []string{config.DigestRecipient}, message)
 }

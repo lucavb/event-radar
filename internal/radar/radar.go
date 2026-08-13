@@ -23,7 +23,6 @@ func (r *Radar) Sync(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.seedTentativeClaude(ctx)
 	if err := r.store.PruneCandidates(ctx, time.Now().UTC()); err != nil {
 		return fmt.Errorf("prune candidates: %w", err)
 	}
@@ -39,8 +38,8 @@ func (r *Radar) Sync(ctx context.Context) error {
 	for _, source := range r.sources {
 		health := SourceHealth{Name: source.Name(), Enabled: source.Enabled()}
 		if !source.Enabled() {
-			health.State = "disabled_pending_attendance"
-			health.LastError = "AI Tinkerers requires attendance within the last 90 days before API access is enabled"
+			health.State = "disabled"
+			health.LastError = "source disabled"
 			if err := r.store.SaveSourceHealth(ctx, health); err != nil {
 				failures = append(failures, err)
 			}
@@ -75,7 +74,6 @@ func (r *Radar) Sync(ctx context.Context) error {
 		if verifier != nil && source.Name() != verifier.Name() {
 			candidates = verifyCandidates(ctx, *verifier, candidates)
 		}
-		candidates = publishableCandidates(candidates, time.Now().UTC())
 		for _, candidate := range candidates {
 			if err := r.store.UpsertCandidate(ctx, candidate); err != nil {
 				failures = append(failures, fmt.Errorf("%s candidate %q: %w", source.Name(), candidate.Title, err))
@@ -108,35 +106,6 @@ func verifyCandidates(ctx context.Context, verifier GeminiSource, candidates []C
 	}
 	waitGroup.Wait()
 	return candidates
-}
-
-func publishableCandidates(candidates []Candidate, now time.Time) []Candidate {
-	filtered := candidates[:0]
-	for _, candidate := range candidates {
-		if candidate.Verification != CandidateVerified ||
-			candidate.EventTitle == "" ||
-			candidate.StartTime.IsZero() ||
-			!candidate.StartTime.After(now) ||
-			candidate.Location == "" ||
-			candidate.EvidenceURL == "" ||
-			candidate.DateEvidence == "" ||
-			candidate.LocationEvidence == "" {
-			continue
-		}
-		filtered = append(filtered, candidate)
-	}
-	return filtered
-}
-
-func (r *Radar) seedTentativeClaude(ctx context.Context) {
-	starts := time.Date(2026, time.September, 21, 18, 0, 0, 0, time.FixedZone("Europe/Berlin", 2*3600))
-	event := Event{
-		Source: "claude-code-munich-seed", SourceID: "claude-code-medien-2026-09-21",
-		Title: "Claude Code für Medien", Location: "KI.M, Balanstraße 73, Haus 11, München",
-		URL: "https://claudecode-muenchen.de/", StartsAt: starts, EndsAt: starts.Add(3 * time.Hour),
-		Status: StatusTentative, Anchor: true, Score: 100,
-	}
-	_ = r.store.UpsertEvent(ctx, event)
 }
 
 func (r *Radar) Events(ctx context.Context) ([]Event, error) {

@@ -23,7 +23,7 @@ func TestParseICSUnfoldsAndRendersCalendar(t *testing.T) {
 	if events[0].Title != "OpenClaw Munich #2, Share & Build" {
 		t.Fatalf("title = %q", events[0].Title)
 	}
-	rendered := RenderICS(events)
+	rendered := RenderICS(Config{AppName: "Event Radar", CalendarProdID: "-//Event Radar//EN", Timezone: "UTC"}, events)
 	if !strings.Contains(rendered, "BEGIN:VCALENDAR") || !strings.Contains(rendered, "UID:") {
 		t.Fatalf("unexpected calendar: %s", rendered)
 	}
@@ -54,26 +54,6 @@ func TestStoreDeduplicatesByTitleTimeAndLocation(t *testing.T) {
 	}
 }
 
-func TestDisabledAIThinkerersStatus(t *testing.T) {
-	store, err := OpenStore(filepath.Join(t.TempDir(), "radar.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	config := Config{DatabasePath: "ignored", FeedToken: "token", ListenAddress: "127.0.0.1:0", SyncInterval: time.Hour, HTTPTimeout: time.Second}
-	app := New(config, store, []Source{DisabledAIThinkererSource{}})
-	if err := app.Sync(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	health, err := app.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(health) != 1 || health[0].State != "disabled_pending_attendance" {
-		t.Fatalf("health = %#v", health)
-	}
-}
-
 func TestDigestHashChangesWithContent(t *testing.T) {
 	if DigestHash("one") == DigestHash("two") {
 		t.Fatal("digest hashes must differ")
@@ -93,7 +73,7 @@ func TestSearXNGSourceDeduplicatesResultsAndRejectsFailures(t *testing.T) {
 		}})
 	}))
 	defer server.Close()
-	source := SearXNGSource{endpoint: server.URL, client: server.Client()}
+	source := SearXNGSource{endpoint: server.URL, queries: []string{"events"}, weights: map[string]int{"munich": 1, "ai": 1, "developer": 1}, client: server.Client()}
 	_, candidates, err := source.Fetch(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +103,7 @@ func TestGeminiSourceDiscoversAndVerifiesStructuredCandidate(t *testing.T) {
 		_ = json.NewEncoder(writer).Encode(map[string]any{"candidates": []map[string]any{{"content": map[string]any{"parts": []map[string]string{{"text": string(text)}}}}}})
 	}))
 	defer server.Close()
-	source := GeminiSource{endpoint: server.URL, token: "test", timeout: time.Second, client: server.Client()}
+	source := GeminiSource{endpoint: server.URL, token: "test", timeout: time.Second, discoveryQueries: []string{"find events"}, criteria: "AI events in Munich", timezone: "UTC", weights: map[string]int{"munich": 1, "ai": 1}, client: server.Client()}
 	_, candidates, err := source.Fetch(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -156,5 +136,35 @@ func TestCandidateUpsertRefreshesVerificationState(t *testing.T) {
 	}
 	if stored.Verification != CandidateVerified || stored.EventTitle != "Event" {
 		t.Fatalf("stored candidate = %#v", stored)
+	}
+}
+
+func TestConfigValidationRequiresLocationAliasesForFilteredFeeds(t *testing.T) {
+	config := Config{
+		DatabasePath: "events.db", FeedToken: "secret", ListenAddress: "127.0.0.1:0",
+		SyncInterval: time.Hour, HTTPTimeout: time.Second, Timezone: "UTC",
+		ICSFeeds: []ICSFeedConfig{{Name: "feed", URL: "https://example.test/events.ics", FilterLocation: true}},
+	}
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "RADAR_LOCATION_ALIASES") {
+		t.Fatalf("validation error = %v", err)
+	}
+}
+
+func TestUnverifiedCandidateRemainsReviewable(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "radar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	candidate := Candidate{Source: "discovery", URL: "https://example.test/event", Title: "Event", Verification: CandidateUnverified}
+	if err := store.UpsertCandidate(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := store.Candidates(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].Verification != CandidateUnverified {
+		t.Fatalf("candidates = %#v", candidates)
 	}
 }

@@ -71,16 +71,16 @@ func (r *Radar) handleMetrics(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	writer.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	_, _ = writer.Write([]byte("# HELP munich_events_upcoming Number of upcoming events.\n# TYPE munich_events_upcoming gauge\nmunich_events_upcoming " + strconvItoa(len(events)) + "\n"))
+	_, _ = writer.Write([]byte("# HELP event_radar_upcoming Number of upcoming events.\n# TYPE event_radar_upcoming gauge\nevent_radar_upcoming " + strconvItoa(len(events)) + "\n"))
 	for status, count := range candidates {
-		_, _ = writer.Write([]byte(`munich_events_candidates{status="` + escapeMetric(status) + `"} ` + strconvItoa(count) + "\n"))
+		_, _ = writer.Write([]byte(`event_radar_candidates{status="` + escapeMetric(status) + `"} ` + strconvItoa(count) + "\n"))
 	}
 	for _, source := range health {
 		state := 0
 		if source.State == "healthy" {
 			state = 1
 		}
-		_, _ = writer.Write([]byte(`munich_events_source_healthy{source="` + escapeMetric(source.Name) + `"} ` + strconvItoa(state) + "\n"))
+		_, _ = writer.Write([]byte(`event_radar_source_healthy{source="` + escapeMetric(source.Name) + `"} ` + strconvItoa(state) + "\n"))
 	}
 }
 
@@ -97,7 +97,7 @@ func (r *Radar) handleCalendar(writer http.ResponseWriter, request *http.Request
 	}
 	writer.Header().Set("Content-Type", "text/calendar; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
-	_, _ = writer.Write([]byte(RenderICS(events)))
+	_, _ = writer.Write([]byte(RenderICS(r.config, events)))
 }
 
 func (r *Radar) adminAuthorized(request *http.Request) bool {
@@ -126,13 +126,13 @@ func (r *Radar) adminAuthorized(request *http.Request) bool {
 
 func (r *Radar) adminSessionValue() string {
 	mac := hmac.New(sha256.New, []byte(r.config.AdminToken))
-	_, _ = mac.Write([]byte("munich-events-admin-session-v1"))
+	_, _ = mac.Write([]byte("event-radar-admin-session-v1"))
 	return fmt.Sprintf("%x", mac.Sum(nil))
 }
 
 func (r *Radar) handleAdmin(writer http.ResponseWriter, request *http.Request) {
 	if !r.adminAuthorized(request) {
-		writer.Header().Set("WWW-Authenticate", `Bearer realm="Munich Event Radar admin"`)
+		writer.Header().Set("WWW-Authenticate", `Bearer realm="`+r.config.AppName+` admin"`)
 		http.Error(writer, "admin token required", http.StatusUnauthorized)
 		return
 	}
@@ -146,7 +146,7 @@ func (r *Radar) handleAdmin(writer http.ResponseWriter, request *http.Request) {
 	}
 	token := html.EscapeString(request.URL.Query().Get("token"))
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = writer.Write([]byte("<!doctype html><meta charset=utf-8><title>Munich Event Radar review</title><style>body{font:16px system-ui;max-width:1000px;margin:2rem auto}article{border:1px solid #ccc;padding:1rem;margin:1rem 0}small{color:#666}form{display:inline}button{margin:.25rem}</style><h1>Unverified events</h1>"))
+	_, _ = writer.Write([]byte("<!doctype html><meta charset=utf-8><title>" + html.EscapeString(r.config.AppName) + " review</title><style>body{font:16px system-ui;max-width:1000px;margin:2rem auto}article{border:1px solid #ccc;padding:1rem;margin:1rem 0}small{color:#666}form{display:inline}button{margin:.25rem}</style><h1>Pending review</h1>"))
 	if len(candidates) == 0 {
 		_, _ = writer.Write([]byte("<p>Nothing needs review.</p>"))
 	}
@@ -191,7 +191,7 @@ func (r *Radar) handleAdminCandidate(writer http.ResponseWriter, request *http.R
 	}
 	switch request.FormValue("action") {
 	case "approve":
-		if candidate.EventTitle == "" || candidate.StartTime.IsZero() || !candidate.StartTime.After(time.Now()) || candidate.Location == "" {
+		if candidate.Verification != CandidateVerified || candidate.EventTitle == "" || candidate.StartTime.IsZero() || !candidate.StartTime.After(time.Now()) || candidate.Location == "" || candidate.EvidenceURL == "" || candidate.DateEvidence == "" || candidate.LocationEvidence == "" {
 			http.Error(writer, "candidate is not verified and cannot be approved", http.StatusBadRequest)
 			return
 		}
