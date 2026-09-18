@@ -71,7 +71,7 @@ func run(args []string) error {
 		if err := app.Sync(ctx); err != nil {
 			slog.WarnContext(ctx, "sync warning", "error", err)
 		}
-		events, err := app.Events(ctx)
+		events, err := app.UpcomingEvents(ctx)
 		if err != nil {
 			return err
 		}

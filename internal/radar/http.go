@@ -59,7 +59,7 @@ func (r *Radar) handleStatus(writer http.ResponseWriter, request *http.Request) 
 }
 
 func (r *Radar) handleMetrics(writer http.ResponseWriter, request *http.Request) {
-	events, err := r.Events(request.Context())
+	events, err := r.UpcomingEvents(request.Context())
 	if err != nil {
 		http.Error(writer, "database unavailable", http.StatusServiceUnavailable)
 		return
@@ -94,7 +94,7 @@ func (r *Radar) handleCalendar(writer http.ResponseWriter, request *http.Request
 		http.NotFound(writer, request)
 		return
 	}
-	events, err := r.Events(request.Context())
+	events, err := r.AllEvents(request.Context())
 	if err != nil {
 		http.Error(writer, "database unavailable", http.StatusServiceUnavailable)
 		return

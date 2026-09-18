@@ -132,8 +132,13 @@ func verifyCandidates(ctx context.Context, verifier GeminiSource, candidates []C
 	return candidates
 }
 
-func (r *Radar) Events(ctx context.Context) ([]Event, error) {
+func (r *Radar) UpcomingEvents(ctx context.Context) ([]Event, error) {
 	return r.store.UpcomingEvents(ctx, time.Now().UTC())
+}
+
+// AllEvents returns the full event history for the calendar feed.
+func (r *Radar) AllEvents(ctx context.Context) ([]Event, error) {
+	return r.store.AllEvents(ctx)
 }
 
 func (r *Radar) Health(ctx context.Context) ([]SourceHealth, error) { return r.store.SourceHealth(ctx) }

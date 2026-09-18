@@ -118,7 +118,17 @@ func (s *Store) UpsertEvent(ctx context.Context, event Event) error {
 }
 
 func (s *Store) UpcomingEvents(ctx context.Context, from time.Time) ([]Event, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT uid, source, source_id, title, description, location, url, starts_at, ends_at, status, anchor, score, created_at, updated_at FROM events WHERE starts_at >= ? ORDER BY starts_at`, from.UTC().Format(time.RFC3339))
+	return s.queryEvents(ctx, `SELECT uid, source, source_id, title, description, location, url, starts_at, ends_at, status, anchor, score, created_at, updated_at FROM events WHERE starts_at >= ? ORDER BY starts_at`, from.UTC().Format(time.RFC3339))
+}
+
+// AllEvents returns every stored event, past and future, so the calendar
+// feed keeps history visible instead of dropping events once they start.
+func (s *Store) AllEvents(ctx context.Context) ([]Event, error) {
+	return s.queryEvents(ctx, `SELECT uid, source, source_id, title, description, location, url, starts_at, ends_at, status, anchor, score, created_at, updated_at FROM events ORDER BY starts_at`)
+}
+
+func (s *Store) queryEvents(ctx context.Context, query string, args ...any) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

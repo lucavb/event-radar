@@ -54,6 +54,46 @@ func TestStoreDeduplicatesByTitleTimeAndLocation(t *testing.T) {
 	}
 }
 
+func TestCalendarFeedKeepsPastEvents(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "radar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	past := Event{Source: "test", SourceID: "past", Title: "Past event", Location: "Munich", StartsAt: now.Add(-48 * time.Hour), EndsAt: now.Add(-46 * time.Hour), Status: StatusConfirmed}
+	future := Event{Source: "test", SourceID: "future", Title: "Future event", Location: "Munich", StartsAt: now.Add(48 * time.Hour), EndsAt: now.Add(50 * time.Hour), Status: StatusConfirmed}
+	for _, event := range []Event{past, future} {
+		if err := store.UpsertEvent(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upcoming, err := store.UpcomingEvents(context.Background(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(upcoming) != 1 || upcoming[0].Title != "Future event" {
+		t.Fatalf("upcoming = %#v, want only the future event", upcoming)
+	}
+	all, err := store.AllEvents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all events = %d, want 2", len(all))
+	}
+	app := New(Config{AppName: "Event Radar", CalendarProdID: "-//Event Radar//EN", Timezone: "UTC", FeedToken: "test-token"}, store, nil)
+	recorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/calendar/test-token.ics", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("calendar status = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "SUMMARY:Past event") || !strings.Contains(body, "SUMMARY:Future event") {
+		t.Fatalf("calendar feed dropped history:\n%s", body)
+	}
+}
+
 func TestDigestHashChangesWithContent(t *testing.T) {
 	if DigestHash("one") == DigestHash("two") {
 		t.Fatal("digest hashes must differ")
