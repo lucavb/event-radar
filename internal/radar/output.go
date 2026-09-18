@@ -14,9 +14,9 @@ import (
 	"go.opentelemetry.io/otel/codes"
 )
 
-func RenderICS(config Config, events []Event) string {
+func RenderICS(branding Branding, events []Event) string {
 	var builder strings.Builder
-	builder.WriteString("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:" + config.CalendarProdID + "\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:" + config.AppName + "\r\nX-WR-TIMEZONE:" + config.Timezone + "\r\n")
+	builder.WriteString("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:" + branding.CalendarProdID + "\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:" + branding.AppName + "\r\nX-WR-TIMEZONE:" + branding.Timezone + "\r\n")
 	for _, event := range events {
 		builder.WriteString("BEGIN:VEVENT\r\n")
 		writeICS(&builder, "UID", event.UID)
@@ -44,7 +44,7 @@ func writeICS(builder *strings.Builder, key, value string) {
 	fmt.Fprintf(builder, "%s:%s\r\n", key, value)
 }
 
-func BuildDigest(config Config, events []Event, now time.Time) string {
+func BuildDigest(branding Branding, events []Event, now time.Time) string {
 	var upcoming []Event
 	limit := now.AddDate(0, 0, 56)
 	for _, event := range events {
@@ -54,8 +54,8 @@ func BuildDigest(config Config, events []Event, now time.Time) string {
 	}
 	sort.Slice(upcoming, func(i, j int) bool { return upcoming[i].StartsAt.Before(upcoming[j].StartsAt) })
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "%s — %d upcoming event(s)\n\n", config.AppName, len(upcoming))
-	location, err := time.LoadLocation(config.Timezone)
+	fmt.Fprintf(&builder, "%s — %d upcoming event(s)\n\n", branding.AppName, len(upcoming))
+	location, err := time.LoadLocation(branding.Timezone)
 	if err != nil {
 		location = time.UTC
 	}
@@ -74,10 +74,10 @@ func DigestHash(content string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func SendDigest(ctx context.Context, config Config, content string, dryRun bool) error {
+func SendDigest(ctx context.Context, delivery Delivery, branding Branding, content string, dryRun bool) error {
 	_, span := otel.Tracer("event-radar").Start(ctx, "smtp.send")
 	defer span.End()
-	if err := sendDigest(config, content, dryRun); err != nil {
+	if err := sendDigest(delivery, branding, content, dryRun); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -85,18 +85,18 @@ func SendDigest(ctx context.Context, config Config, content string, dryRun bool)
 	return nil
 }
 
-func sendDigest(config Config, content string, dryRun bool) error {
+func sendDigest(delivery Delivery, branding Branding, content string, dryRun bool) error {
 	if dryRun {
 		return nil
 	}
-	if config.SMTPHost == "" || config.SMTPUsername == "" || config.SMTPPassword == "" || config.SMTPFrom == "" || config.DigestRecipient == "" {
+	if delivery.SMTPHost == "" || delivery.SMTPUsername == "" || delivery.SMTPPassword == "" || delivery.SMTPFrom == "" || delivery.DigestRecipient == "" {
 		return fmt.Errorf("SMTP delivery is not configured")
 	}
-	host, _, hasPort := strings.Cut(config.SMTPHost, ":")
+	host, _, hasPort := strings.Cut(delivery.SMTPHost, ":")
 	if !hasPort {
 		return fmt.Errorf("RADAR_SMTP_HOST must be host:port")
 	}
-	auth := smtp.PlainAuth("", config.SMTPUsername, config.SMTPPassword, host)
-	message := []byte("To: " + config.DigestRecipient + "\r\nFrom: " + config.SMTPFrom + "\r\nSubject: " + config.AppName + "\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + content)
-	return smtp.SendMail(config.SMTPHost, auth, config.SMTPFrom, []string{config.DigestRecipient}, message)
+	auth := smtp.PlainAuth("", delivery.SMTPUsername, delivery.SMTPPassword, host)
+	message := []byte("To: " + delivery.DigestRecipient + "\r\nFrom: " + delivery.SMTPFrom + "\r\nSubject: " + branding.AppName + "\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + content)
+	return smtp.SendMail(delivery.SMTPHost, auth, delivery.SMTPFrom, []string{delivery.DigestRecipient}, message)
 }

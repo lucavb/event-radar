@@ -261,8 +261,8 @@ func firstString(record map[string]any, keys ...string) (string, bool) {
 	return "", false
 }
 
-func SourcesFromConfig(config Config) ([]Source, Verifier) {
-	client := &http.Client{Timeout: config.HTTPTimeout, Transport: otelhttp.NewTransport(http.DefaultTransport)}
+func SourcesFromConfig(config Sources, timezone string, httpTimeout time.Duration) ([]Source, Verifier) {
+	client := &http.Client{Timeout: httpTimeout, Transport: otelhttp.NewTransport(http.DefaultTransport)}
 	sources := make([]Source, 0, len(config.ICSFeeds)+3)
 	aliases := cleanList(config.LocationAliases)
 	for _, feed := range config.ICSFeeds {
@@ -281,7 +281,7 @@ func SourcesFromConfig(config Config) ([]Source, Verifier) {
 	var verifier Verifier
 	if config.GeminiEndpoint != "" {
 		gemini := GeminiSource{
-			endpoint: config.GeminiEndpoint, discoveryQueries: config.GeminiDiscoveryQueries, criteria: config.EventCriteria, timezone: config.Timezone, weights: config.RelevanceWeights,
+			endpoint: config.GeminiEndpoint, discoveryQueries: config.GeminiDiscoveryQueries, criteria: config.EventCriteria, timezone: timezone, weights: config.RelevanceWeights,
 			apiKey: config.GeminiAPIKey, token: config.GeminiToken,
 			timeout: config.GeminiTimeout, client: &http.Client{Timeout: config.GeminiTimeout, Transport: otelhttp.NewTransport(http.DefaultTransport)},
 		}

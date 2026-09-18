@@ -162,7 +162,7 @@ func (r *Radar) CandidateCounts(ctx context.Context) (map[string]int, error) {
 }
 
 func (r *Radar) Run(ctx context.Context) {
-	ticker := time.NewTicker(r.config.SyncInterval)
+	ticker := time.NewTicker(r.config.Runtime.SyncInterval)
 	defer ticker.Stop()
 	_ = r.Sync(ctx)
 	for {

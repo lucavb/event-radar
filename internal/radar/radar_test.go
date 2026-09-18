@@ -23,7 +23,7 @@ func TestParseICSUnfoldsAndRendersCalendar(t *testing.T) {
 	if events[0].Title != "OpenClaw Munich #2, Share & Build" {
 		t.Fatalf("title = %q", events[0].Title)
 	}
-	rendered := RenderICS(Config{AppName: "Event Radar", CalendarProdID: "-//Event Radar//EN", Timezone: "UTC"}, events)
+	rendered := RenderICS(Branding{AppName: "Event Radar", CalendarProdID: "-//Event Radar//EN", Timezone: "UTC"}, events)
 	if !strings.Contains(rendered, "BEGIN:VCALENDAR") || !strings.Contains(rendered, "UID:") {
 		t.Fatalf("unexpected calendar: %s", rendered)
 	}
@@ -82,7 +82,7 @@ func TestCalendarFeedKeepsPastEvents(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("all events = %d, want 2", len(all))
 	}
-	app := New(Config{AppName: "Event Radar", CalendarProdID: "-//Event Radar//EN", Timezone: "UTC", FeedToken: "test-token"}, store, nil, nil)
+	app := New(Config{Branding: Branding{AppName: "Event Radar", CalendarProdID: "-//Event Radar//EN", Timezone: "UTC"}, Runtime: Runtime{FeedToken: "test-token"}}, store, nil, nil)
 	recorder := httptest.NewRecorder()
 	app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/calendar/test-token.ics", nil))
 	if recorder.Code != http.StatusOK {
@@ -197,9 +197,9 @@ func TestCandidateUpsertRefreshesVerificationState(t *testing.T) {
 
 func TestConfigValidationRequiresLocationAliasesForFilteredFeeds(t *testing.T) {
 	config := Config{
-		DatabasePath: "events.db", FeedToken: "secret", ListenAddress: "127.0.0.1:0",
-		SyncInterval: time.Hour, HTTPTimeout: time.Second, Timezone: "UTC",
-		ICSFeeds: []ICSFeedConfig{{Name: "feed", URL: "https://example.test/events.ics", FilterLocation: true}},
+		Runtime:  Runtime{DatabasePath: "events.db", FeedToken: "secret", ListenAddress: "127.0.0.1:0", SyncInterval: time.Hour, HTTPTimeout: time.Second},
+		Branding: Branding{Timezone: "UTC"},
+		Sources:  Sources{ICSFeeds: []ICSFeedConfig{{Name: "feed", URL: "https://example.test/events.ics", FilterLocation: true}}},
 	}
 	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "RADAR_LOCATION_ALIASES") {
 		t.Fatalf("validation error = %v", err)
@@ -230,8 +230,8 @@ func TestLoadConfigLoggingDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.LogFormat != "text" || config.LogLevel != "info" {
-		t.Fatalf("logging defaults = %q/%q, want text/info", config.LogFormat, config.LogLevel)
+	if config.Observability.LogFormat != "text" || config.Observability.LogLevel != "info" {
+		t.Fatalf("logging defaults = %q/%q, want text/info", config.Observability.LogFormat, config.Observability.LogLevel)
 	}
 	t.Setenv("RADAR_LOG_FORMAT", "json")
 	t.Setenv("RADAR_LOG_LEVEL", "debug")
@@ -239,16 +239,16 @@ func TestLoadConfigLoggingDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.LogFormat != "json" || config.LogLevel != "debug" {
-		t.Fatalf("logging config = %q/%q, want json/debug", config.LogFormat, config.LogLevel)
+	if config.Observability.LogFormat != "json" || config.Observability.LogLevel != "debug" {
+		t.Fatalf("logging config = %q/%q, want json/debug", config.Observability.LogFormat, config.Observability.LogLevel)
 	}
 }
 
 func TestValidateLoggingAllowlist(t *testing.T) {
 	base := Config{
-		DatabasePath: "events.db", FeedToken: "secret", ListenAddress: "127.0.0.1:0",
-		SyncInterval: time.Hour, HTTPTimeout: time.Second, Timezone: "UTC",
-		ICSFeeds: []ICSFeedConfig{{Name: "feed", URL: "https://example.test/events.ics"}},
+		Runtime:  Runtime{DatabasePath: "events.db", FeedToken: "secret", ListenAddress: "127.0.0.1:0", SyncInterval: time.Hour, HTTPTimeout: time.Second},
+		Branding: Branding{Timezone: "UTC"},
+		Sources:  Sources{ICSFeeds: []ICSFeedConfig{{Name: "feed", URL: "https://example.test/events.ics"}}},
 	}
 	for _, test := range []struct {
 		name                   string
@@ -266,9 +266,9 @@ func TestValidateLoggingAllowlist(t *testing.T) {
 		{name: "bad tracing", tracing: "yes", want: "RADAR_TRACING_ENABLED"},
 	} {
 		config := base
-		config.LogFormat = test.format
-		config.LogLevel = test.level
-		config.TracingEnabled = test.tracing
+		config.Observability.LogFormat = test.format
+		config.Observability.LogLevel = test.level
+		config.Observability.TracingEnabled = test.tracing
 		err := config.Validate()
 		if test.want == "" {
 			if err != nil {
@@ -279,5 +279,48 @@ func TestValidateLoggingAllowlist(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Fatalf("%s: validation error = %v", test.name, err)
 		}
+	}
+}
+
+func TestLoadConfigMapsEnvToNestedGroups(t *testing.T) {
+	t.Setenv("RADAR_APP_NAME", "Radar Test")
+	t.Setenv("RADAR_FEED_TOKEN", "feed-secret")
+	t.Setenv("RADAR_SMTP_HOST", "smtp.example.test:587")
+	t.Setenv("RADAR_GEMINI_ENDPOINT", "https://gemini.example.test/")
+	t.Setenv("RADAR_GEMINI_TIMEOUT_SECONDS", "90")
+	t.Setenv("RADAR_ADMIN_TOKEN", "admin-secret")
+	t.Setenv("RADAR_TRACING_ENABLED", "true")
+	t.Setenv("RADAR_ICS_FEEDS", `[{"name":"feed","url":"https://example.test/events.ics","anchor":true}]`)
+	t.Setenv("RADAR_RELEVANCE_WEIGHTS", `{"munich":3}`)
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Branding.AppName != "Radar Test" {
+		t.Fatalf("Branding.AppName = %q, want Radar Test", config.Branding.AppName)
+	}
+	if config.Runtime.FeedToken != "feed-secret" || config.Runtime.AdminToken != "admin-secret" {
+		t.Fatalf("Runtime tokens = %q/%q, want feed-secret/admin-secret", config.Runtime.FeedToken, config.Runtime.AdminToken)
+	}
+	if config.Delivery.SMTPHost != "smtp.example.test:587" {
+		t.Fatalf("Delivery.SMTPHost = %q, want smtp.example.test:587", config.Delivery.SMTPHost)
+	}
+	if config.Sources.GeminiEndpoint != "https://gemini.example.test" {
+		t.Fatalf("Sources.GeminiEndpoint = %q, want https://gemini.example.test (trailing slash trimmed)", config.Sources.GeminiEndpoint)
+	}
+	if config.Sources.GeminiTimeout != 90*time.Second {
+		t.Fatalf("Sources.GeminiTimeout = %v, want 90s", config.Sources.GeminiTimeout)
+	}
+	if len(config.Sources.ICSFeeds) != 1 || config.Sources.ICSFeeds[0].Name != "feed" || !config.Sources.ICSFeeds[0].Anchor {
+		t.Fatalf("Sources.ICSFeeds = %#v", config.Sources.ICSFeeds)
+	}
+	if config.Sources.RelevanceWeights["munich"] != 3 {
+		t.Fatalf("Sources.RelevanceWeights = %#v", config.Sources.RelevanceWeights)
+	}
+	if config.Observability.TracingEnabled != "true" {
+		t.Fatalf("Observability.TracingEnabled = %q, want true", config.Observability.TracingEnabled)
+	}
+	if config.Runtime.SyncInterval != 360*time.Minute || config.Runtime.HTTPTimeout != 20*time.Second {
+		t.Fatalf("Runtime defaults = %v/%v, want 360m/20s", config.Runtime.SyncInterval, config.Runtime.HTTPTimeout)
 	}
 }

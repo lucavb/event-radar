@@ -19,15 +19,16 @@ type ICSFeedConfig struct {
 	ForceConfirmed bool   `json:"force_confirmed"`
 }
 
-type Config struct {
-	DatabasePath           string
-	FeedToken              string
-	ListenAddress          string
-	SyncInterval           time.Duration
-	HTTPTimeout            time.Duration
-	AppName                string
-	CalendarProdID         string
-	Timezone               string
+// Branding carries the user-visible identity shared by the calendar feed and
+// the digest: application name, calendar PRODID, and timezone.
+type Branding struct {
+	AppName        string
+	CalendarProdID string
+	Timezone       string
+}
+
+// Sources carries every anchored feed and discovery provider configuration.
+type Sources struct {
 	EventCriteria          string
 	LocationAliases        []string
 	ICSFeeds               []ICSFeedConfig
@@ -39,17 +40,44 @@ type Config struct {
 	GeminiToken            string
 	GeminiTimeout          time.Duration
 	GeminiDiscoveryQueries []string
-	AdminToken             string
 	AITinkerersKey         string
 	AITinkerersQuery       string
-	SMTPHost               string
-	SMTPUsername           string
-	SMTPPassword           string
-	SMTPFrom               string
-	DigestRecipient        string
-	LogFormat              string
-	LogLevel               string
-	TracingEnabled         string
+}
+
+// Delivery carries the SMTP settings for the opt-in email digest.
+type Delivery struct {
+	SMTPHost        string
+	SMTPUsername    string
+	SMTPPassword    string
+	SMTPFrom        string
+	DigestRecipient string
+}
+
+// Observability carries logging and tracing configuration.
+type Observability struct {
+	LogFormat      string
+	LogLevel       string
+	TracingEnabled string
+}
+
+// Runtime carries process-level settings: storage, serving, scheduling, and
+// admin authentication.
+type Runtime struct {
+	DatabasePath  string
+	FeedToken     string
+	ListenAddress string
+	SyncInterval  time.Duration
+	HTTPTimeout   time.Duration
+	AdminToken    string
+}
+
+// Config groups configuration into the sub-structs each consumer reads.
+type Config struct {
+	Branding      Branding
+	Sources       Sources
+	Delivery      Delivery
+	Observability Observability
+	Runtime       Runtime
 }
 
 func LoadConfig() (Config, error) {
@@ -88,64 +116,74 @@ func LoadConfig() (Config, error) {
 	legacyKey := os.Getenv("RADAR_AI_TINKERERS_API_KEY")
 
 	return Config{
-		DatabasePath:           stringEnv("RADAR_DATABASE_PATH", "event-radar.db"),
-		FeedToken:              stringEnv("RADAR_FEED_TOKEN", "change-me-before-public-use"),
-		ListenAddress:          stringEnv("RADAR_LISTEN_ADDRESS", "127.0.0.1:8080"),
-		SyncInterval:           time.Duration(syncMinutes) * time.Minute,
-		HTTPTimeout:            time.Duration(timeoutSeconds) * time.Second,
-		AppName:                stringEnv("RADAR_APP_NAME", "Event Radar"),
-		CalendarProdID:         stringEnv("RADAR_CALENDAR_PRODID", "-//Event Radar//Event Radar//EN"),
-		Timezone:               stringEnv("RADAR_TIMEZONE", "UTC"),
-		EventCriteria:          strings.TrimSpace(os.Getenv("RADAR_EVENT_CRITERIA")),
-		LocationAliases:        aliases,
-		ICSFeeds:               feeds,
-		SearXNGURL:             strings.TrimRight(os.Getenv("RADAR_SEARXNG_URL"), "/"),
-		SearXNGQueries:         searxQueries,
-		RelevanceWeights:       weights,
-		GeminiEndpoint:         strings.TrimRight(os.Getenv("RADAR_GEMINI_ENDPOINT"), "/"),
-		GeminiAPIKey:           os.Getenv("RADAR_GEMINI_API_KEY"),
-		GeminiToken:            os.Getenv("RADAR_GEMINI_TOKEN"),
-		GeminiTimeout:          time.Duration(geminiTimeoutSeconds) * time.Second,
-		GeminiDiscoveryQueries: geminiQueries,
-		AdminToken:             os.Getenv("RADAR_ADMIN_TOKEN"),
-		AITinkerersKey:         stringEnv("RADAR_AITINKERERS_API_KEY", legacyKey),
-		AITinkerersQuery:       strings.TrimSpace(os.Getenv("RADAR_AITINKERERS_QUERY")),
-		SMTPHost:               os.Getenv("RADAR_SMTP_HOST"),
-		SMTPUsername:           os.Getenv("RADAR_SMTP_USERNAME"),
-		SMTPPassword:           os.Getenv("RADAR_SMTP_PASSWORD"),
-		SMTPFrom:               os.Getenv("RADAR_SMTP_FROM"),
-		DigestRecipient:        os.Getenv("RADAR_DIGEST_RECIPIENT"),
-		LogFormat:              stringEnv("RADAR_LOG_FORMAT", "text"),
-		LogLevel:               stringEnv("RADAR_LOG_LEVEL", "info"),
-		TracingEnabled:         stringEnv("RADAR_TRACING_ENABLED", ""),
+		Branding: Branding{
+			AppName:        stringEnv("RADAR_APP_NAME", "Event Radar"),
+			CalendarProdID: stringEnv("RADAR_CALENDAR_PRODID", "-//Event Radar//Event Radar//EN"),
+			Timezone:       stringEnv("RADAR_TIMEZONE", "UTC"),
+		},
+		Sources: Sources{
+			EventCriteria:          strings.TrimSpace(os.Getenv("RADAR_EVENT_CRITERIA")),
+			LocationAliases:        aliases,
+			ICSFeeds:               feeds,
+			SearXNGURL:             strings.TrimRight(os.Getenv("RADAR_SEARXNG_URL"), "/"),
+			SearXNGQueries:         searxQueries,
+			RelevanceWeights:       weights,
+			GeminiEndpoint:         strings.TrimRight(os.Getenv("RADAR_GEMINI_ENDPOINT"), "/"),
+			GeminiAPIKey:           os.Getenv("RADAR_GEMINI_API_KEY"),
+			GeminiToken:            os.Getenv("RADAR_GEMINI_TOKEN"),
+			GeminiTimeout:          time.Duration(geminiTimeoutSeconds) * time.Second,
+			GeminiDiscoveryQueries: geminiQueries,
+			AITinkerersKey:         stringEnv("RADAR_AITINKERERS_API_KEY", legacyKey),
+			AITinkerersQuery:       strings.TrimSpace(os.Getenv("RADAR_AITINKERERS_QUERY")),
+		},
+		Delivery: Delivery{
+			SMTPHost:        os.Getenv("RADAR_SMTP_HOST"),
+			SMTPUsername:    os.Getenv("RADAR_SMTP_USERNAME"),
+			SMTPPassword:    os.Getenv("RADAR_SMTP_PASSWORD"),
+			SMTPFrom:        os.Getenv("RADAR_SMTP_FROM"),
+			DigestRecipient: os.Getenv("RADAR_DIGEST_RECIPIENT"),
+		},
+		Observability: Observability{
+			LogFormat:      stringEnv("RADAR_LOG_FORMAT", "text"),
+			LogLevel:       stringEnv("RADAR_LOG_LEVEL", "info"),
+			TracingEnabled: stringEnv("RADAR_TRACING_ENABLED", ""),
+		},
+		Runtime: Runtime{
+			DatabasePath:  stringEnv("RADAR_DATABASE_PATH", "event-radar.db"),
+			FeedToken:     stringEnv("RADAR_FEED_TOKEN", "change-me-before-public-use"),
+			ListenAddress: stringEnv("RADAR_LISTEN_ADDRESS", "127.0.0.1:8080"),
+			SyncInterval:  time.Duration(syncMinutes) * time.Minute,
+			HTTPTimeout:   time.Duration(timeoutSeconds) * time.Second,
+			AdminToken:    os.Getenv("RADAR_ADMIN_TOKEN"),
+		},
 	}, nil
 }
 
 func (c Config) Validate() error {
-	if c.DatabasePath == "" || c.FeedToken == "" || c.ListenAddress == "" {
+	if c.Runtime.DatabasePath == "" || c.Runtime.FeedToken == "" || c.Runtime.ListenAddress == "" {
 		return fmt.Errorf("RADAR_DATABASE_PATH, RADAR_FEED_TOKEN and RADAR_LISTEN_ADDRESS are required")
 	}
-	if c.SyncInterval <= 0 || c.HTTPTimeout <= 0 {
+	if c.Runtime.SyncInterval <= 0 || c.Runtime.HTTPTimeout <= 0 {
 		return fmt.Errorf("sync interval and HTTP timeout must be positive")
 	}
-	if !slices.Contains([]string{"", "text", "json"}, c.LogFormat) {
+	if !slices.Contains([]string{"", "text", "json"}, c.Observability.LogFormat) {
 		return fmt.Errorf("RADAR_LOG_FORMAT must be empty, text, or json")
 	}
-	if !slices.Contains([]string{"", "debug", "info", "warn", "error"}, c.LogLevel) {
+	if !slices.Contains([]string{"", "debug", "info", "warn", "error"}, c.Observability.LogLevel) {
 		return fmt.Errorf("RADAR_LOG_LEVEL must be empty, debug, info, warn, or error")
 	}
-	if !slices.Contains([]string{"", "true"}, c.TracingEnabled) {
+	if !slices.Contains([]string{"", "true"}, c.Observability.TracingEnabled) {
 		return fmt.Errorf("RADAR_TRACING_ENABLED must be empty or true")
 	}
-	if _, err := time.LoadLocation(c.Timezone); err != nil {
+	if _, err := time.LoadLocation(c.Branding.Timezone); err != nil {
 		return fmt.Errorf("RADAR_TIMEZONE: %w", err)
 	}
-	if c.FeedToken == "change-me-before-public-use" {
+	if c.Runtime.FeedToken == "change-me-before-public-use" {
 		return fmt.Errorf("RADAR_FEED_TOKEN must be changed before use")
 	}
 	seen := map[string]bool{}
 	hasFilter := false
-	for index, feed := range c.ICSFeeds {
+	for index, feed := range c.Sources.ICSFeeds {
 		if strings.TrimSpace(feed.Name) == "" || strings.TrimSpace(feed.URL) == "" {
 			return fmt.Errorf("RADAR_ICS_FEEDS entry %d requires name and url", index)
 		}
@@ -159,28 +197,28 @@ func (c Config) Validate() error {
 		}
 		hasFilter = hasFilter || feed.FilterLocation
 	}
-	if hasFilter && len(cleanList(c.LocationAliases)) == 0 {
+	if hasFilter && len(cleanList(c.Sources.LocationAliases)) == 0 {
 		return fmt.Errorf("RADAR_LOCATION_ALIASES is required by a filtered ICS feed")
 	}
-	if c.SearXNGURL != "" && len(cleanList(c.SearXNGQueries)) == 0 {
+	if c.Sources.SearXNGURL != "" && len(cleanList(c.Sources.SearXNGQueries)) == 0 {
 		return fmt.Errorf("RADAR_SEARXNG_QUERIES is required when RADAR_SEARXNG_URL is set")
 	}
-	geminiConfigured := c.GeminiEndpoint != "" || c.GeminiAPIKey != "" || c.GeminiToken != ""
+	geminiConfigured := c.Sources.GeminiEndpoint != "" || c.Sources.GeminiAPIKey != "" || c.Sources.GeminiToken != ""
 	if geminiConfigured {
-		if c.GeminiEndpoint == "" || (c.GeminiAPIKey == "" && c.GeminiToken == "") {
+		if c.Sources.GeminiEndpoint == "" || (c.Sources.GeminiAPIKey == "" && c.Sources.GeminiToken == "") {
 			return fmt.Errorf("gemini requires RADAR_GEMINI_ENDPOINT and an API key or token")
 		}
-		if len(cleanList(c.GeminiDiscoveryQueries)) == 0 || c.EventCriteria == "" {
+		if len(cleanList(c.Sources.GeminiDiscoveryQueries)) == 0 || c.Sources.EventCriteria == "" {
 			return fmt.Errorf("RADAR_GEMINI_DISCOVERY_QUERIES and RADAR_EVENT_CRITERIA are required for Gemini")
 		}
 	}
-	if c.AITinkerersKey != "" && c.AITinkerersQuery == "" {
+	if c.Sources.AITinkerersKey != "" && c.Sources.AITinkerersQuery == "" {
 		return fmt.Errorf("RADAR_AITINKERERS_QUERY is required when the AI Tinkerers API key is set")
 	}
-	if len(c.ICSFeeds) == 0 && c.SearXNGURL == "" && !geminiConfigured && c.AITinkerersKey == "" {
+	if len(c.Sources.ICSFeeds) == 0 && c.Sources.SearXNGURL == "" && !geminiConfigured && c.Sources.AITinkerersKey == "" {
 		return fmt.Errorf("at least one event source must be configured")
 	}
-	for term, weight := range c.RelevanceWeights {
+	for term, weight := range c.Sources.RelevanceWeights {
 		if strings.TrimSpace(term) == "" || weight <= 0 {
 			return fmt.Errorf("RADAR_RELEVANCE_WEIGHTS must contain non-empty terms with positive weights")
 		}

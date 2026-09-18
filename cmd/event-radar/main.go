@@ -41,10 +41,10 @@ func run(args []string) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
-	if err := setLogger(config); err != nil {
+	if err := setLogger(config.Observability); err != nil {
 		return err
 	}
-	traceShutdown, err := observ.SetupTracing(context.Background(), config.TracingEnabled == "true")
+	traceShutdown, err := observ.SetupTracing(context.Background(), config.Observability.TracingEnabled == "true")
 	if err != nil {
 		return err
 	}
@@ -53,12 +53,12 @@ func run(args []string) error {
 		defer cancel()
 		_ = traceShutdown(shutdownCtx)
 	}()
-	store, err := radar.OpenStore(config.DatabasePath)
+	store, err := radar.OpenStore(config.Runtime.DatabasePath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = store.Close() }()
-	sources, verifier := radar.SourcesFromConfig(config)
+	sources, verifier := radar.SourcesFromConfig(config.Sources, config.Branding.Timezone, config.Runtime.HTTPTimeout)
 	app := radar.New(config, store, sources, verifier)
 	ctx := context.Background()
 
@@ -76,7 +76,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		content := radar.BuildDigest(config, events, time.Now())
+		content := radar.BuildDigest(config.Branding, events, time.Now())
 		fmt.Print(content)
 		changed, err := store.DeliveryChanged(ctx, "email", radar.DigestHash(content))
 		if err != nil {
@@ -86,7 +86,7 @@ func run(args []string) error {
 			fmt.Println("Digest unchanged; not sending.")
 			return nil
 		}
-		if err := radar.SendDigest(ctx, config, content, *dryRun); err != nil {
+		if err := radar.SendDigest(ctx, config.Delivery, config.Branding, content, *dryRun); err != nil {
 			return err
 		}
 		if !*dryRun {
@@ -104,7 +104,7 @@ func serve(app *radar.Radar, config radar.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go app.Run(ctx)
-	server := &http.Server{Addr: config.ListenAddress, Handler: app.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Addr: config.Runtime.ListenAddress, Handler: app.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
@@ -113,7 +113,7 @@ func serve(app *radar.Radar, config radar.Config) error {
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	slog.InfoContext(ctx, "listening", "app", config.AppName, "address", config.ListenAddress)
+	slog.InfoContext(ctx, "listening", "app", config.Branding.AppName, "address", config.Runtime.ListenAddress)
 	err := server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		// Wait for in-flight requests to drain so the deferred trace flush
@@ -124,14 +124,14 @@ func serve(app *radar.Radar, config radar.Config) error {
 	return err
 }
 
-func setLogger(config radar.Config) error {
+func setLogger(observability radar.Observability) error {
 	level := slog.LevelInfo
-	if err := level.UnmarshalText([]byte(config.LogLevel)); err != nil {
+	if err := level.UnmarshalText([]byte(observability.LogLevel)); err != nil {
 		return fmt.Errorf("configure logging: %w", err)
 	}
 	options := &slog.HandlerOptions{Level: level}
 	var handler slog.Handler
-	if config.LogFormat == "json" {
+	if observability.LogFormat == "json" {
 		handler = slog.NewJSONHandler(os.Stdout, options)
 	} else {
 		handler = slog.NewTextHandler(os.Stdout, options)

@@ -91,7 +91,7 @@ func (r *Radar) handleMetrics(writer http.ResponseWriter, request *http.Request)
 
 func (r *Radar) handleCalendar(writer http.ResponseWriter, request *http.Request) {
 	token := strings.TrimPrefix(request.URL.Path, "/calendar/")
-	if !strings.HasSuffix(token, ".ics") || strings.TrimSuffix(token, ".ics") != r.config.FeedToken {
+	if !strings.HasSuffix(token, ".ics") || strings.TrimSuffix(token, ".ics") != r.config.Runtime.FeedToken {
 		http.NotFound(writer, request)
 		return
 	}
@@ -102,11 +102,11 @@ func (r *Radar) handleCalendar(writer http.ResponseWriter, request *http.Request
 	}
 	writer.Header().Set("Content-Type", "text/calendar; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
-	_, _ = writer.Write([]byte(RenderICS(r.config, events)))
+	_, _ = writer.Write([]byte(RenderICS(r.config.Branding, events)))
 }
 
 func (r *Radar) adminAuthorized(request *http.Request) bool {
-	if r.config.AdminToken == "" {
+	if r.config.Runtime.AdminToken == "" {
 		return false
 	}
 	token := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
@@ -125,19 +125,19 @@ func (r *Radar) adminAuthorized(request *http.Request) bool {
 	if token == "" {
 		return false
 	}
-	authorized := subtle.ConstantTimeCompare([]byte(token), []byte(r.config.AdminToken)) == 1
+	authorized := subtle.ConstantTimeCompare([]byte(token), []byte(r.config.Runtime.AdminToken)) == 1
 	return authorized
 }
 
 func (r *Radar) adminSessionValue() string {
-	mac := hmac.New(sha256.New, []byte(r.config.AdminToken))
+	mac := hmac.New(sha256.New, []byte(r.config.Runtime.AdminToken))
 	_, _ = mac.Write([]byte("event-radar-admin-session-v1"))
 	return fmt.Sprintf("%x", mac.Sum(nil))
 }
 
 func (r *Radar) handleAdmin(writer http.ResponseWriter, request *http.Request) {
 	if !r.adminAuthorized(request) {
-		writer.Header().Set("WWW-Authenticate", `Bearer realm="`+r.config.AppName+` admin"`)
+		writer.Header().Set("WWW-Authenticate", `Bearer realm="`+r.config.Branding.AppName+` admin"`)
 		http.Error(writer, "admin token required", http.StatusUnauthorized)
 		return
 	}
@@ -151,7 +151,7 @@ func (r *Radar) handleAdmin(writer http.ResponseWriter, request *http.Request) {
 	}
 	token := html.EscapeString(request.URL.Query().Get("token"))
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = writer.Write([]byte("<!doctype html><meta charset=utf-8><title>" + html.EscapeString(r.config.AppName) + " review</title><style>body{font:16px system-ui;max-width:1000px;margin:2rem auto}article{border:1px solid #ccc;padding:1rem;margin:1rem 0}small{color:#666}form{display:inline}button{margin:.25rem}</style><h1>Pending review</h1>"))
+	_, _ = writer.Write([]byte("<!doctype html><meta charset=utf-8><title>" + html.EscapeString(r.config.Branding.AppName) + " review</title><style>body{font:16px system-ui;max-width:1000px;margin:2rem auto}article{border:1px solid #ccc;padding:1rem;margin:1rem 0}small{color:#666}form{display:inline}button{margin:.25rem}</style><h1>Pending review</h1>"))
 	if len(candidates) == 0 {
 		_, _ = writer.Write([]byte("<p>Nothing needs review.</p>"))
 	}
