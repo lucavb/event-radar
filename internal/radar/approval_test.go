@@ -60,11 +60,8 @@ func TestApprovalGateRejectsEachFailedCondition(t *testing.T) {
 			if !errors.Is(err, test.sentinel) {
 				t.Fatalf("gate error = %v, want %v", err, test.sentinel)
 			}
-			if len(store.events) != 0 {
-				t.Fatalf("failed gate must not publish an event: %#v", store.events)
-			}
-			if len(store.updates) != 0 {
-				t.Fatalf("failed gate must not record approval: %#v", store.updates)
+			if len(store.publishes) != 0 {
+				t.Fatalf("failed gate must not publish: %#v", store.publishes)
 			}
 		})
 	}
@@ -82,10 +79,10 @@ func TestApprovalPublishesTentativeUnanchoredEvent(t *testing.T) {
 	if approved.ReviewedAt == nil || !approved.ReviewedAt.Equal(fixedClock) {
 		t.Fatalf("reviewed at = %v, want fixed clock %v", approved.ReviewedAt, fixedClock)
 	}
-	if len(store.events) != 1 {
-		t.Fatalf("published events = %d, want 1", len(store.events))
+	if len(store.publishes) != 1 {
+		t.Fatalf("published events = %d, want 1", len(store.publishes))
 	}
-	event := store.events[0]
+	event := store.publishes[0].event
 	if event.Status != StatusTentative {
 		t.Fatalf("event status = %q, want tentative", event.Status)
 	}
@@ -110,8 +107,11 @@ func TestApprovalPublishesTentativeUnanchoredEvent(t *testing.T) {
 	if !event.EndsAt.Equal(event.StartsAt.Add(2 * time.Hour)) {
 		t.Fatalf("event end time = %v, want start plus two hours", event.EndsAt)
 	}
-	if len(store.updates) != 1 || store.updates[0].Status != CandidateApproved {
-		t.Fatalf("approval not persisted through UpdateCandidate: %#v", store.updates)
+	if store.publishes[0].candidate.Status != CandidateApproved {
+		t.Fatalf("approval not published with the candidate: %#v", store.publishes[0].candidate)
+	}
+	if len(store.events) != 0 || len(store.updates) != 0 {
+		t.Fatalf("approval must go through the single atomic publish, got events=%d updates=%d", len(store.events), len(store.updates))
 	}
 }
 
@@ -122,8 +122,8 @@ func TestApprovalUsesProvidedEndTime(t *testing.T) {
 	if _, err := ApproveCandidate(context.Background(), store, fixedClock, candidate.URL); err != nil {
 		t.Fatal(err)
 	}
-	if !store.events[0].EndsAt.Equal(candidate.EndTime) {
-		t.Fatalf("event end time = %v, want candidate end time %v", store.events[0].EndsAt, candidate.EndTime)
+	if !store.publishes[0].event.EndsAt.Equal(candidate.EndTime) {
+		t.Fatalf("event end time = %v, want candidate end time %v", store.publishes[0].event.EndsAt, candidate.EndTime)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestRejectMarksCandidateRejected(t *testing.T) {
 	if rejected.ReviewedAt == nil || !rejected.ReviewedAt.Equal(fixedClock) {
 		t.Fatalf("reviewed at = %v, want fixed clock %v", rejected.ReviewedAt, fixedClock)
 	}
-	if len(store.events) != 0 {
+	if len(store.publishes) != 0 {
 		t.Fatal("rejecting must not publish an event")
 	}
 	if len(store.updates) != 1 || store.updates[0].Status != CandidateRejected {
@@ -166,10 +166,10 @@ func TestRestoreReturnsCandidateToPendingReview(t *testing.T) {
 	}
 }
 
-func TestApprovalMissingCandidateFailsLookup(t *testing.T) {
+func TestApprovalMissingCandidateIsNotFound(t *testing.T) {
 	store := &fakeStore{}
 	_, err := ApproveCandidate(context.Background(), store, fixedClock, "https://example.test/missing")
-	if !errors.Is(err, errCandidateLookup) {
-		t.Fatalf("lookup error = %v, want candidate lookup failure", err)
+	if !errors.Is(err, ErrCandidateNotFound) {
+		t.Fatalf("lookup error = %v, want ErrCandidateNotFound", err)
 	}
 }

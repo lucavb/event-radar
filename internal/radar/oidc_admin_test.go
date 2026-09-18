@@ -2,6 +2,7 @@ package radar
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -418,5 +419,79 @@ func TestOIDCConfigValidationAndAuthConfigMapping(t *testing.T) {
 		strings.Join(authConfig.AllowedDomains, ",") != "Example.ORG" ||
 		strings.Join(authConfig.AllowedSubs, ",") != "sub-a,sub-b" {
 		t.Fatalf("AuthConfig list mapping mismatch: %#v", authConfig)
+	}
+}
+
+// TestAdminCandidateErrorBranches drives token mode into every error branch
+// of the review handler and pins each status code and body copy.
+func TestAdminCandidateErrorBranches(t *testing.T) {
+	// Anchored to the wall clock so the gate's "in the past" check never
+	// fires in these store-error and gate-failure scenarios.
+	future := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
+	gatePassing := func() Candidate {
+		candidate := verifiedCandidate()
+		candidate.StartTime = future
+		return candidate
+	}
+	const candidateURL = "https://example.test/event"
+
+	unverifiedStore := &fakeStore{}
+	unverified := gatePassing()
+	unverified.Verification = CandidateUnverified
+	if err := unverifiedStore.UpsertCandidate(context.Background(), unverified); err != nil {
+		t.Fatal(err)
+	}
+	publishErrStore := &fakeStore{publishErr: errors.New("publish failed")}
+	if err := publishErrStore.UpsertCandidate(context.Background(), gatePassing()); err != nil {
+		t.Fatal(err)
+	}
+	updateErrStore := &fakeStore{updateCandidateErr: errors.New("update failed")}
+	if err := updateErrStore.UpsertCandidate(context.Background(), gatePassing()); err != nil {
+		t.Fatal(err)
+	}
+	emptyStore := &fakeStore{}
+
+	config := Config{
+		Branding: Branding{AppName: "Event Radar", CalendarProdID: "-//Event Radar//EN", Timezone: "UTC"},
+		Runtime: Runtime{
+			DatabasePath:  filepath.Join(t.TempDir(), "unused.db"),
+			FeedToken:     "test-feed-token",
+			ListenAddress: "127.0.0.1:0",
+			SyncInterval:  time.Hour,
+			HTTPTimeout:   time.Second,
+			AdminToken:    "admin-token",
+		},
+	}
+	post := func(store *fakeStore, action, rawURL string) *httptest.ResponseRecorder {
+		form := url.Values{"action": {action}, "url": {rawURL}, "token": {"admin-token"}}
+		request := httptest.NewRequest(http.MethodPost, "/admin/candidate", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		New(config, store, nil, nil).Handler().ServeHTTP(rec, request)
+		return rec
+	}
+	for _, test := range []struct {
+		name       string
+		store      *fakeStore
+		action     string
+		rawURL     string
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "gate failure", store: unverifiedStore, action: "approve", rawURL: candidateURL, wantStatus: http.StatusBadRequest, wantBody: "candidate is not verified and cannot be approved"},
+		{name: "missing candidate", store: emptyStore, action: "approve", rawURL: "https://example.test/missing", wantStatus: http.StatusNotFound, wantBody: "candidate not found"},
+		{name: "approve store error", store: publishErrStore, action: "approve", rawURL: candidateURL, wantStatus: http.StatusInternalServerError, wantBody: "could not approve candidate"},
+		{name: "reject store error", store: updateErrStore, action: "reject", rawURL: candidateURL, wantStatus: http.StatusInternalServerError, wantBody: "could not update candidate"},
+		{name: "restore store error", store: updateErrStore, action: "restore", rawURL: candidateURL, wantStatus: http.StatusInternalServerError, wantBody: "could not update candidate"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rec := post(test.store, test.action, test.rawURL)
+			if rec.Code != test.wantStatus {
+				t.Fatalf("status = %d, body %q, want %d", rec.Code, rec.Body.String(), test.wantStatus)
+			}
+			if body := rec.Body.String(); body != test.wantBody+"\n" {
+				t.Fatalf("body = %q, want %q", body, test.wantBody+"\n")
+			}
+		})
 	}
 }

@@ -34,18 +34,12 @@ func isApprovalGateError(err error) bool {
 	return errors.As(err, &gate)
 }
 
-// Persistence outcomes the review handler maps to its existing responses.
-var (
-	errCandidateLookup = errors.New("candidate lookup failed")
-	errEventPersist    = errors.New("event upsert failed")
-	errCandidateUpdate = errors.New("candidate update failed")
-)
-
 // ApproveCandidate enforces the publish gate on a candidate under review and,
 // on success, publishes it as a tentative, non-anchored event and records the
 // approval review metadata. The candidate is loaded by URL through the Store
 // interface; now is the injected clock for the "in the past" check and the
-// reviewed_at timestamp.
+// reviewed_at timestamp. Review actions do not serialize against a running
+// sync; see Store.Publish.
 func ApproveCandidate(ctx context.Context, store Store, now time.Time, rawURL string) (Candidate, error) {
 	candidate, err := loadCandidate(ctx, store, rawURL)
 	if err != nil {
@@ -58,13 +52,10 @@ func ApproveCandidate(ctx context.Context, store Store, now time.Time, rawURL st
 	if event.EndsAt.IsZero() {
 		event.EndsAt = event.StartsAt.Add(2 * time.Hour)
 	}
-	if err := store.UpsertEvent(ctx, event); err != nil {
-		return candidate, fmt.Errorf("%w: %v", errEventPersist, err)
-	}
 	candidate.Status = CandidateApproved
 	candidate.ReviewedAt = timePtr(now)
-	if err := store.UpdateCandidate(ctx, candidate); err != nil {
-		return candidate, fmt.Errorf("%w: %v", errCandidateUpdate, err)
+	if err := store.Publish(ctx, event, candidate); err != nil {
+		return candidate, fmt.Errorf("publish approved candidate: %w", err)
 	}
 	return candidate, nil
 }
@@ -78,7 +69,7 @@ func RejectCandidate(ctx context.Context, store Store, now time.Time, rawURL str
 	candidate.Status = CandidateRejected
 	candidate.ReviewedAt = timePtr(now)
 	if err := store.UpdateCandidate(ctx, candidate); err != nil {
-		return candidate, fmt.Errorf("%w: %v", errCandidateUpdate, err)
+		return candidate, fmt.Errorf("update candidate: %w", err)
 	}
 	return candidate, nil
 }
@@ -93,7 +84,7 @@ func RestoreCandidate(ctx context.Context, store Store, now time.Time, rawURL st
 	candidate.Status = CandidatePending
 	candidate.ReviewedAt = timePtr(now)
 	if err := store.UpdateCandidate(ctx, candidate); err != nil {
-		return candidate, fmt.Errorf("%w: %v", errCandidateUpdate, err)
+		return candidate, fmt.Errorf("update candidate: %w", err)
 	}
 	return candidate, nil
 }
@@ -102,7 +93,7 @@ func RestoreCandidate(ctx context.Context, store Store, now time.Time, rawURL st
 func loadCandidate(ctx context.Context, store Store, rawURL string) (Candidate, error) {
 	candidate, err := store.Candidate(ctx, rawURL)
 	if err != nil {
-		return Candidate{}, fmt.Errorf("%w: %v", errCandidateLookup, err)
+		return Candidate{}, fmt.Errorf("load candidate: %w", err)
 	}
 	return candidate, nil
 }

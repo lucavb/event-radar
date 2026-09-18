@@ -243,8 +243,9 @@ func (r *Radar) handleAdminCandidate(writer http.ResponseWriter, request *http.R
 			return
 		}
 	}
+	action := request.FormValue("action")
 	var err error
-	switch request.FormValue("action") {
+	switch action {
 	case "approve":
 		_, err = ApproveCandidate(request.Context(), r.store, time.Now().UTC(), request.FormValue("url"))
 	case "reject":
@@ -259,14 +260,14 @@ func (r *Radar) handleAdminCandidate(writer http.ResponseWriter, request *http.R
 		switch {
 		case isApprovalGateError(err):
 			http.Error(writer, "candidate is not verified and cannot be approved", http.StatusBadRequest)
-		case errors.Is(err, errCandidateLookup):
+		case errors.Is(err, ErrCandidateNotFound):
 			http.Error(writer, "candidate not found", http.StatusNotFound)
-		case errors.Is(err, errCandidateUpdate):
-			http.Error(writer, "could not update candidate", http.StatusInternalServerError)
 		default:
-			// Only approving persists an event, so this branch is reachable
-			// from approve alone.
-			http.Error(writer, "could not approve candidate", http.StatusInternalServerError)
+			if action == "approve" {
+				http.Error(writer, "could not approve candidate", http.StatusInternalServerError)
+			} else {
+				http.Error(writer, "could not update candidate", http.StatusInternalServerError)
+			}
 		}
 		return
 	}

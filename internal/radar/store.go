@@ -3,6 +3,7 @@ package radar
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -21,12 +22,24 @@ type Store interface {
 	UpsertCandidate(ctx context.Context, candidate Candidate) error
 	Candidates(ctx context.Context, includeRejected bool) ([]Candidate, error)
 	Candidate(ctx context.Context, rawURL string) (Candidate, error)
+	// UpdateCandidate writes review metadata back; zero rows affected is
+	// not an error (a missing row silently updates nothing).
 	UpdateCandidate(ctx context.Context, candidate Candidate) error
 	CandidateCounts(ctx context.Context) (map[string]int, error)
+
+	// Publish persists an approved candidate's tentative event and the
+	// candidate's approved state as one atomic unit: either both writes
+	// persist or neither does. It returns ErrCandidateNotFound if the
+	// candidate row no longer exists at publish time.
+	Publish(ctx context.Context, event Event, candidate Candidate) error
+	DeliveryChanged(ctx context.Context, kind, contentHash string) (bool, error)
+	MarkDelivered(ctx context.Context, kind, contentHash string) error
 }
 
-// SQLiteStore is the concrete SQLite implementation of Store. The digest
-// command also calls DeliveryChanged and MarkDelivered directly on it.
+// ErrCandidateNotFound is returned when no candidate exists for a URL.
+var ErrCandidateNotFound = errors.New("candidate not found")
+
+// SQLiteStore is the concrete SQLite implementation of Store.
 type SQLiteStore struct{ db *sql.DB }
 
 func OpenStore(path string) (*SQLiteStore, error) {
@@ -114,7 +127,15 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	return nil
 }
 
-func (s *SQLiteStore) UpsertEvent(ctx context.Context, event Event) error {
+// dbExecer lets the single-write methods and the Publish transaction
+// share one SQL statement each.
+type dbExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// upsertEvent is the single event upsert statement, shared by UpsertEvent
+// and the Publish transaction.
+func upsertEvent(ctx context.Context, db dbExecer, event Event) error {
 	now := time.Now().UTC()
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = now
@@ -123,7 +144,7 @@ func (s *SQLiteStore) UpsertEvent(ctx context.Context, event Event) error {
 	if event.UID == "" {
 		event.UID = EventUID(event.Source, event.SourceID, event.Title, event.StartsAt)
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO events (uid, source, source_id, title, description, location, url, starts_at, ends_at, status, anchor, score, fingerprint, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(fingerprint) DO UPDATE SET
@@ -135,6 +156,10 @@ func (s *SQLiteStore) UpsertEvent(ctx context.Context, event Event) error {
 		event.StartsAt.UTC().Format(time.RFC3339), event.EndsAt.UTC().Format(time.RFC3339), event.Status,
 		boolInt(event.Anchor), event.Score, EventFingerprint(event), event.CreatedAt.UTC().Format(time.RFC3339), event.UpdatedAt.UTC().Format(time.RFC3339))
 	return err
+}
+
+func (s *SQLiteStore) UpsertEvent(ctx context.Context, event Event) error {
+	return upsertEvent(ctx, s.db, event)
 }
 
 func (s *SQLiteStore) UpcomingEvents(ctx context.Context, from time.Time) ([]Event, error) {
@@ -317,11 +342,14 @@ func (s *SQLiteStore) Candidates(ctx context.Context, includeRejected bool) ([]C
 	return output, rows.Err()
 }
 
-func (s *SQLiteStore) UpdateCandidate(ctx context.Context, candidate Candidate) error {
+// updateCandidate is the single candidate update statement, shared by
+// UpdateCandidate and the Publish transaction. The result lets callers
+// tell a missing candidate row (zero rows affected) from a real write.
+func updateCandidate(ctx context.Context, db dbExecer, candidate Candidate) (sql.Result, error) {
 	if candidate.Status == "" {
 		candidate.Status = CandidatePending
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE candidates SET title=?, status=?, verification=?,
+	return db.ExecContext(ctx, `UPDATE candidates SET title=?, status=?, verification=?,
 		event_title=?, start_time=?, end_time=?, location=?, description=?, evidence_url=?,
 		date_evidence=?, location_evidence=?, confidence=?, last_error=?, verified_at=?,
 		reviewed_at=?, review_note=? WHERE url=?`,
@@ -330,7 +358,46 @@ func (s *SQLiteStore) UpdateCandidate(ctx context.Context, candidate Candidate) 
 		candidate.Description, candidate.EvidenceURL, candidate.DateEvidence, candidate.LocationEvidence,
 		candidate.Confidence, candidate.LastError, formatOptionalTimePtr(candidate.VerifiedAt),
 		formatOptionalTimePtr(candidate.ReviewedAt), candidate.ReviewNote, candidate.URL)
+}
+
+func (s *SQLiteStore) UpdateCandidate(ctx context.Context, candidate Candidate) error {
+	_, err := updateCandidate(ctx, s.db, candidate)
 	return err
+}
+
+// Publish stores the event and the approved candidate as one atomic
+// unit: either both writes persist or neither does. A candidate row
+// that vanished between load and publish fails with ErrCandidateNotFound
+// and rolls the event back.
+//
+// Review actions do not serialize against a running sync (Radar.mu
+// guards only Sync). That is accepted for a single-admin local
+// deployment: re-discovery never overwrites status on conflict, and
+// this atomic write removes partial publishes. Revisit if a
+// multi-writer deployment appears.
+func (s *SQLiteStore) Publish(ctx context.Context, event Event, candidate Candidate) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after a successful commit
+	if err := upsertEvent(ctx, tx, event); err != nil {
+		return err
+	}
+	result, err := updateCandidate(ctx, tx, candidate)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		// The candidate row vanished between load and publish. Rolling
+		// back keeps the publish all-or-nothing.
+		return fmt.Errorf("candidate %q: %w", candidate.URL, ErrCandidateNotFound)
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) Candidate(ctx context.Context, rawURL string) (Candidate, error) {
@@ -346,7 +413,7 @@ func (s *SQLiteStore) Candidate(ctx context.Context, rawURL string) (Candidate, 
 		if err := rows.Err(); err != nil {
 			return Candidate{}, err
 		}
-		return Candidate{}, sql.ErrNoRows
+		return Candidate{}, ErrCandidateNotFound
 	}
 	var candidate Candidate
 	var discovered, start, end, verified, reviewed sql.NullString

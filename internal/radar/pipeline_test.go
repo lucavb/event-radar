@@ -25,7 +25,9 @@ func (s *stubSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) {
 	return s.events, s.candidates, s.err
 }
 
-// fakeStore is an in-memory Store implementing only the pipeline seam.
+// fakeStore is an in-memory Store implementing the full Store seam: the
+// pipeline writes, the review actions (updates plus atomic publishes), and
+// the digest delivery methods.
 type fakeStore struct {
 	health             []SourceHealth
 	events             []Event
@@ -34,6 +36,14 @@ type fakeStore struct {
 	saveHealthErr      error
 	upsertEventErr     error
 	updateCandidateErr error
+	publishes          []publishCall
+	publishErr         error
+}
+
+// publishCall records one atomic publish outcome.
+type publishCall struct {
+	event     Event
+	candidate Candidate
 }
 
 func (s *fakeStore) PruneCandidates(ctx context.Context, now time.Time) error { return nil }
@@ -85,7 +95,7 @@ func (s *fakeStore) Candidate(ctx context.Context, rawURL string) (Candidate, er
 			return candidate, nil
 		}
 	}
-	return Candidate{}, errors.New("not found")
+	return Candidate{}, ErrCandidateNotFound
 }
 
 func (s *fakeStore) UpdateCandidate(ctx context.Context, candidate Candidate) error {
@@ -98,6 +108,22 @@ func (s *fakeStore) UpdateCandidate(ctx context.Context, candidate Candidate) er
 
 func (s *fakeStore) CandidateCounts(ctx context.Context) (map[string]int, error) {
 	return map[string]int{CandidatePending: len(s.candidates)}, nil
+}
+
+func (s *fakeStore) Publish(ctx context.Context, event Event, candidate Candidate) error {
+	if s.publishErr != nil {
+		return s.publishErr
+	}
+	s.publishes = append(s.publishes, publishCall{event: event, candidate: candidate})
+	return nil
+}
+
+func (s *fakeStore) DeliveryChanged(ctx context.Context, kind, contentHash string) (bool, error) {
+	return true, nil
+}
+
+func (s *fakeStore) MarkDelivered(ctx context.Context, kind, contentHash string) error {
+	return nil
 }
 
 // fakeVerifier records calls and returns a canned verified candidate.

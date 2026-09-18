@@ -3,6 +3,7 @@ package radar
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -51,6 +52,88 @@ func TestStoreDeduplicatesByTitleTimeAndLocation(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Description != "updated" {
 		t.Fatalf("dedupe failed: %#v", events)
+	}
+}
+
+func TestStorePublishPersistsEventAndApproval(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "radar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	// Seconds precision keeps ReviewedAt equal across the RFC3339 round-trip.
+	now := time.Now().UTC().Truncate(time.Second)
+	candidate := Candidate{
+		Source: "gemini-discovery", URL: "https://example.test/event", Title: "AI Night",
+		EventTitle: "Munich AI Night", Verification: CandidateVerified,
+		StartTime: now.Add(48 * time.Hour), Location: "Munich",
+		EvidenceURL: "https://example.test/event", DateEvidence: "20 September 2026 18:00",
+		LocationEvidence: "Munich", Score: 7, Status: CandidatePending,
+	}
+	// The sync pipeline creates the candidate in pending review; only the
+	// publish write can move it to approved, so the post-publish assertions
+	// pin Publish's UPDATE of status and reviewed_at.
+	if err := store.UpsertCandidate(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	candidate.Status = CandidateApproved
+	candidate.ReviewedAt = &now
+	event := Event{
+		Source: "reviewed-gemini-discovery", SourceID: candidate.URL, Title: candidate.EventTitle,
+		Location: candidate.Location, URL: candidate.EvidenceURL,
+		StartsAt: candidate.StartTime, EndsAt: candidate.StartTime.Add(2 * time.Hour),
+		Status: StatusTentative, Anchor: false, Score: candidate.Score,
+	}
+	if err := store.Publish(context.Background(), event, candidate); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.AllEvents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Title != "Munich AI Night" || events[0].Status != StatusTentative || events[0].Anchor {
+		t.Fatalf("published events = %#v", events)
+	}
+	stored, err := store.Candidate(context.Background(), candidate.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != CandidateApproved || !stored.ReviewedAt.Equal(now) {
+		t.Fatalf("stored candidate = %#v, want approved at %v", stored, now)
+	}
+}
+
+func TestStoreCandidateMissingIsNotFound(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "radar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	_, err = store.Candidate(context.Background(), "https://example.test/missing")
+	if !errors.Is(err, ErrCandidateNotFound) {
+		t.Fatalf("candidate lookup error = %v, want ErrCandidateNotFound", err)
+	}
+}
+
+func TestStorePublishMissingCandidateRollsBackEvent(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "radar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	event := Event{Source: "reviewed-gemini-discovery", SourceID: "https://example.test/vanished", Title: "Munich AI Night", StartsAt: now.Add(48 * time.Hour), Status: StatusTentative, Anchor: false}
+	candidate := Candidate{Source: "gemini-discovery", URL: "https://example.test/vanished", Status: CandidateApproved, ReviewedAt: &now}
+	err = store.Publish(context.Background(), event, candidate)
+	if !errors.Is(err, ErrCandidateNotFound) {
+		t.Fatalf("publish error = %v, want ErrCandidateNotFound", err)
+	}
+	events, err := store.AllEvents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("event persisted despite the failed publish: %#v", events)
 	}
 }
 
