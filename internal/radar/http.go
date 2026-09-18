@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lucabecker/event-radar/internal/auth"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -21,11 +22,39 @@ func (r *Radar) Handler() http.Handler {
 	mux.Handle("GET /metrics", http.HandlerFunc(r.handleMetrics))
 	mux.Handle("GET /status", otelhttp.NewHandler(http.HandlerFunc(r.handleStatus), "GET /status"))
 	// /calendar/ is not traced: the feed token is part of the URL path, and
-	// otelhttp would record it in span URL attributes.
+	// otelhttp would record it in span attributes.
 	mux.Handle("GET /calendar/", http.HandlerFunc(r.handleCalendar))
+	// /oidc/ is not traced: the callback URL carries code and state in the
+	// query string, and otelhttp would record them in span attributes.
+	if r.oidcEnabled() {
+		mux.Handle("GET /oidc/login", http.HandlerFunc(r.authenticator.LoginHandler()))
+		mux.Handle("GET /oidc/callback", http.HandlerFunc(r.authenticator.CallbackHandler()))
+	}
 	mux.Handle("GET /admin", otelhttp.NewHandler(http.HandlerFunc(r.handleAdmin), "GET /admin"))
 	mux.Handle("POST /admin/candidate", otelhttp.NewHandler(http.HandlerFunc(r.handleAdminCandidate), "POST /admin/candidate"))
+	if r.oidcEnabled() {
+		mux.Handle("POST /admin/logout", otelhttp.NewHandler(http.HandlerFunc(r.authenticator.LogoutHandler()), "POST /admin/logout"))
+	}
 	return mux
+}
+
+// adminIdentity resolves the admin authentication state: a non-nil session
+// means an OIDC login is active; otherwise tokenOK reflects the legacy admin
+// token (Authorization header, ?token= link, or legacy cookie).
+func (r *Radar) adminIdentity(request *http.Request) (*auth.Session, bool) {
+	if session := r.authenticator.Session(request); session != nil {
+		return session, false
+	}
+	return nil, r.adminAuthorized(request)
+}
+
+func (r *Radar) redirectAdminUnauthorized(writer http.ResponseWriter, request *http.Request) {
+	if r.oidcEnabled() {
+		http.Redirect(writer, request, "/oidc/login", http.StatusSeeOther)
+		return
+	}
+	writer.Header().Set("WWW-Authenticate", `Bearer realm="`+r.config.Branding.AppName+` admin"`)
+	http.Error(writer, "admin token required", http.StatusUnauthorized)
 }
 
 func (r *Radar) handleHealth(writer http.ResponseWriter, request *http.Request) {
@@ -136,9 +165,9 @@ func (r *Radar) adminSessionValue() string {
 }
 
 func (r *Radar) handleAdmin(writer http.ResponseWriter, request *http.Request) {
-	if !r.adminAuthorized(request) {
-		writer.Header().Set("WWW-Authenticate", `Bearer realm="`+r.config.Branding.AppName+` admin"`)
-		http.Error(writer, "admin token required", http.StatusUnauthorized)
+	session, tokenOK := r.adminIdentity(request)
+	if session == nil && !tokenOK {
+		r.redirectAdminUnauthorized(writer, request)
 		return
 	}
 	candidates, err := r.Candidates(request.Context(), false)
@@ -146,12 +175,27 @@ func (r *Radar) handleAdmin(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "database unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if request.URL.Query().Get("token") != "" {
+	// The legacy session cookie is a token-mode convenience; OIDC sessions use
+	// their own cookie and must not trigger it.
+	if session == nil && request.URL.Query().Get("token") != "" {
 		http.SetCookie(writer, &http.Cookie{Name: "radar_admin_session", Value: r.adminSessionValue(), Path: "/admin", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: request.TLS != nil})
 	}
 	token := html.EscapeString(request.URL.Query().Get("token"))
+	// Token mode carries the admin token in hidden fields and links; session
+	// mode carries the per-session CSRF token instead.
+	var credentialField, identityHeader string
+	if session != nil {
+		credentialField = `<input type=hidden name=csrf value="` + html.EscapeString(session.CSRFToken) + `">`
+		identity := session.Email
+		if identity == "" {
+			identity = session.UserSub
+		}
+		identityHeader = "<p>Signed in as " + html.EscapeString(identity) + ` <form method="post" action="/admin/logout"><button type="submit">Sign out</button></form></p>`
+	} else {
+		credentialField = `<input type=hidden name=token value="` + token + `">`
+	}
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = writer.Write([]byte("<!doctype html><meta charset=utf-8><title>" + html.EscapeString(r.config.Branding.AppName) + " review</title><style>body{font:16px system-ui;max-width:1000px;margin:2rem auto}article{border:1px solid #ccc;padding:1rem;margin:1rem 0}small{color:#666}form{display:inline}button{margin:.25rem}</style><h1>Pending review</h1>"))
+	_, _ = writer.Write([]byte("<!doctype html><meta charset=utf-8><title>" + html.EscapeString(r.config.Branding.AppName) + " review</title><style>body{font:16px system-ui;max-width:1000px;margin:2rem auto}article{border:1px solid #ccc;padding:1rem;margin:1rem 0}small{color:#666}form{display:inline}button{margin:.25rem}</style><h1>Pending review</h1>" + identityHeader))
 	if len(candidates) == 0 {
 		_, _ = writer.Write([]byte("<p>Nothing needs review.</p>"))
 	}
@@ -169,7 +213,7 @@ func (r *Radar) handleAdmin(writer http.ResponseWriter, request *http.Request) {
 		} else {
 			_, _ = writer.Write([]byte("<p><b>Suggested date:</b> not verified</p>"))
 		}
-		_, _ = writer.Write([]byte("<form method=post action=\"/admin/candidate\"><input type=hidden name=token value=\"" + token + "\"><input type=hidden name=url value=\"" + html.EscapeString(candidate.URL) + "\"><button name=action value=approve>Approve</button><button name=action value=reject>Reject</button><button name=action value=restore>Restore</button></form></article>"))
+		_, _ = writer.Write([]byte("<form method=post action=\"/admin/candidate\">" + credentialField + "<input type=hidden name=url value=\"" + html.EscapeString(candidate.URL) + "\"><button name=action value=approve>Approve</button><button name=action value=reject>Reject</button><button name=action value=restore>Restore</button></form></article>"))
 	}
 }
 
@@ -184,13 +228,20 @@ func (c Candidate) EventTitleOrTitle() string {
 // gate and state transitions live in approval.go; this handler stays
 // responsible for auth, parsing, response mapping, and the redirect.
 func (r *Radar) handleAdminCandidate(writer http.ResponseWriter, request *http.Request) {
-	if !r.adminAuthorized(request) {
-		http.Error(writer, "admin token required", http.StatusUnauthorized)
+	session, tokenOK := r.adminIdentity(request)
+	if session == nil && !tokenOK {
+		r.redirectAdminUnauthorized(writer, request)
 		return
 	}
 	if err := request.ParseForm(); err != nil {
 		http.Error(writer, "invalid form", http.StatusBadRequest)
 		return
+	}
+	if session != nil {
+		if subtle.ConstantTimeCompare([]byte(request.FormValue("csrf")), []byte(session.CSRFToken)) != 1 {
+			http.Error(writer, "invalid CSRF token", http.StatusForbidden)
+			return
+		}
 	}
 	var err error
 	switch request.FormValue("action") {
@@ -217,6 +268,10 @@ func (r *Radar) handleAdminCandidate(writer http.ResponseWriter, request *http.R
 			// from approve alone.
 			http.Error(writer, "could not approve candidate", http.StatusInternalServerError)
 		}
+		return
+	}
+	if session != nil {
+		http.Redirect(writer, request, "/admin", http.StatusSeeOther)
 		return
 	}
 	http.Redirect(writer, request, "/admin?token="+request.FormValue("token"), http.StatusSeeOther)

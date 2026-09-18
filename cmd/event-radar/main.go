@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lucabecker/event-radar/internal/auth"
 	"github.com/lucabecker/event-radar/internal/observ"
 	"github.com/lucabecker/event-radar/internal/radar"
 )
@@ -94,15 +95,24 @@ func run(args []string) error {
 		}
 		return nil
 	case "run":
-		return serve(app, config)
+		return serve(app, config, store)
 	default:
 		return fmt.Errorf("unknown command %q (use run, sync, digest, or check-config)", command)
 	}
 }
 
-func serve(app *radar.Radar, config radar.Config) error {
+func serve(app *radar.Radar, config radar.Config, store *radar.SQLiteStore) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if config.OIDCConfigured() {
+		// check-config and sync/digest stay network-free; only the server
+		// runs OIDC discovery.
+		authenticator, err := auth.New(ctx, config.AuthConfig(), store.DB())
+		if err != nil {
+			return fmt.Errorf("configure oidc: %w", err)
+		}
+		app.AttachAuth(authenticator)
+	}
 	go app.Run(ctx)
 	server := &http.Server{Addr: config.Runtime.ListenAddress, Handler: app.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	drained := make(chan struct{})

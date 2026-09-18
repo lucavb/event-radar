@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lucabecker/event-radar/internal/auth"
 )
 
 type ICSFeedConfig struct {
@@ -61,14 +63,23 @@ type Observability struct {
 }
 
 // Runtime carries process-level settings: storage, serving, scheduling, and
-// admin authentication.
+// admin authentication (break-glass token and OIDC login).
 type Runtime struct {
-	DatabasePath  string
-	FeedToken     string
-	ListenAddress string
-	SyncInterval  time.Duration
-	HTTPTimeout   time.Duration
-	AdminToken    string
+	DatabasePath       string
+	FeedToken          string
+	ListenAddress      string
+	SyncInterval       time.Duration
+	HTTPTimeout        time.Duration
+	AdminToken         string
+	OIDCIssuer         string
+	OIDCClientID       string
+	OIDCClientSecret   string
+	OIDCRedirectURL    string
+	OIDCScopes         []string
+	OIDCAllowedEmails  []string
+	OIDCAllowedDomains []string
+	OIDCAllowedSubs    []string
+	TrustProxy         bool
 }
 
 // Config groups configuration into the sub-structs each consumer reads.
@@ -149,12 +160,21 @@ func LoadConfig() (Config, error) {
 			TracingEnabled: stringEnv("RADAR_TRACING_ENABLED", ""),
 		},
 		Runtime: Runtime{
-			DatabasePath:  stringEnv("RADAR_DATABASE_PATH", "event-radar.db"),
-			FeedToken:     stringEnv("RADAR_FEED_TOKEN", "change-me-before-public-use"),
-			ListenAddress: stringEnv("RADAR_LISTEN_ADDRESS", "127.0.0.1:8080"),
-			SyncInterval:  time.Duration(syncMinutes) * time.Minute,
-			HTTPTimeout:   time.Duration(timeoutSeconds) * time.Second,
-			AdminToken:    os.Getenv("RADAR_ADMIN_TOKEN"),
+			DatabasePath:       stringEnv("RADAR_DATABASE_PATH", "event-radar.db"),
+			FeedToken:          stringEnv("RADAR_FEED_TOKEN", "change-me-before-public-use"),
+			ListenAddress:      stringEnv("RADAR_LISTEN_ADDRESS", "127.0.0.1:8080"),
+			SyncInterval:       time.Duration(syncMinutes) * time.Minute,
+			HTTPTimeout:        time.Duration(timeoutSeconds) * time.Second,
+			AdminToken:         os.Getenv("RADAR_ADMIN_TOKEN"),
+			OIDCIssuer:         strings.TrimSpace(os.Getenv("RADAR_OIDC_ISSUER")),
+			OIDCClientID:       strings.TrimSpace(os.Getenv("RADAR_OIDC_CLIENT_ID")),
+			OIDCClientSecret:   strings.TrimSpace(os.Getenv("RADAR_OIDC_CLIENT_SECRET")),
+			OIDCRedirectURL:    strings.TrimSpace(os.Getenv("RADAR_OIDC_REDIRECT_URL")),
+			OIDCScopes:         listEnv("RADAR_OIDC_SCOPES"),
+			OIDCAllowedEmails:  listEnv("RADAR_OIDC_ALLOWED_EMAILS"),
+			OIDCAllowedDomains: listEnv("RADAR_OIDC_ALLOWED_DOMAINS"),
+			OIDCAllowedSubs:    listEnv("RADAR_OIDC_ALLOWED_SUBS"),
+			TrustProxy:         boolEnv("RADAR_TRUST_PROXY"),
 		},
 	}, nil
 }
@@ -223,7 +243,53 @@ func (c Config) Validate() error {
 			return fmt.Errorf("RADAR_RELEVANCE_WEIGHTS must contain non-empty terms with positive weights")
 		}
 	}
+	if c.Runtime.OIDCIssuer != "" {
+		if err := validateHTTPSOrLocalhost(c.Runtime.OIDCIssuer, "RADAR_OIDC_ISSUER"); err != nil {
+			return err
+		}
+		if c.Runtime.OIDCClientID == "" || c.Runtime.OIDCClientSecret == "" || c.Runtime.OIDCRedirectURL == "" {
+			return fmt.Errorf("RADAR_OIDC_ISSUER requires RADAR_OIDC_CLIENT_ID, RADAR_OIDC_CLIENT_SECRET and RADAR_OIDC_REDIRECT_URL")
+		}
+		if err := validateHTTPSOrLocalhost(c.Runtime.OIDCRedirectURL, "RADAR_OIDC_REDIRECT_URL"); err != nil {
+			return err
+		}
+		if len(c.Runtime.OIDCAllowedEmails) == 0 && len(c.Runtime.OIDCAllowedDomains) == 0 && len(c.Runtime.OIDCAllowedSubs) == 0 {
+			return fmt.Errorf("at least one of RADAR_OIDC_ALLOWED_EMAILS, RADAR_OIDC_ALLOWED_DOMAINS or RADAR_OIDC_ALLOWED_SUBS must be set")
+		}
+	}
 	return nil
+}
+
+func validateHTTPSOrLocalhost(raw, name string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
+		return fmt.Errorf("%s must be an absolute URL", name)
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	if parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1") {
+		return nil
+	}
+	return fmt.Errorf("%s must use https (plain http is only allowed for localhost/127.0.0.1)", name)
+}
+
+// OIDCConfigured reports whether OIDC admin login is configured.
+func (c Config) OIDCConfigured() bool { return c.Runtime.OIDCIssuer != "" }
+
+// AuthConfig maps the radar configuration onto the auth package's config.
+func (c Config) AuthConfig() auth.Config {
+	return auth.Config{
+		Issuer:         c.Runtime.OIDCIssuer,
+		ClientID:       c.Runtime.OIDCClientID,
+		ClientSecret:   c.Runtime.OIDCClientSecret,
+		RedirectURL:    c.Runtime.OIDCRedirectURL,
+		Scopes:         c.Runtime.OIDCScopes,
+		AllowedEmails:  c.Runtime.OIDCAllowedEmails,
+		AllowedDomains: c.Runtime.OIDCAllowedDomains,
+		AllowedSubs:    c.Runtime.OIDCAllowedSubs,
+		TrustProxy:     c.Runtime.TrustProxy,
+	}
 }
 
 func jsonEnv[T any](name, fallback string) (T, error) {
@@ -263,4 +329,22 @@ func intEnv(name string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s must be a positive integer", name)
 	}
 	return value, nil
+}
+
+// listEnv reads a comma-separated environment variable and returns the
+// trimmed, non-empty entries. Unlike cleanList it does not lowercase, so
+// allowlist subjects keep their case.
+func listEnv(name string) []string {
+	var values []string
+	for _, value := range strings.Split(os.Getenv(name), ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+// boolEnv reports whether the environment variable is set to exactly "true".
+func boolEnv(name string) bool {
+	return os.Getenv(name) == "true"
 }

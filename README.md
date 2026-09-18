@@ -42,6 +42,13 @@ Endpoints:
 - `/metrics` exposes Prometheus gauges.
 - `/admin?token=<RADAR_ADMIN_TOKEN>` reviews candidates.
 
+With OIDC configured (see below), the admin page is additionally reachable via
+browser login:
+
+- `/oidc/login` starts the login.
+- `/oidc/callback` finishes it.
+- `POST /admin/logout` signs out.
+
 ## Configuration
 
 Structured values use JSON so URLs and search text do not depend on custom
@@ -61,6 +68,43 @@ delimiter escaping.
   branding and formatting.
 - `RADAR_ADMIN_TOKEN`: separate token for candidate moderation.
 - `RADAR_SMTP_*` and `RADAR_DIGEST_RECIPIENT`: optional digest delivery.
+
+## OIDC login
+
+When `RADAR_OIDC_ISSUER` is set, the admin review page is protected by an
+OpenID Connect authorization-code flow with PKCE against any compliant
+provider. It applies to the admin routes only. `RADAR_ADMIN_TOKEN` keeps
+working as break-glass access beside it: `GET /admin?token=<token>`,
+`Bearer` tokens, and token-mode forms behave exactly as before.
+
+Register the application at your provider with the **exact-match redirect URI**
+`https://<your-host>/oidc/callback`.
+
+Required environment variables:
+
+- `RADAR_OIDC_ISSUER`: https issuer URL (plain http only for localhost),
+  for example `https://sso.example.com/realms/main`; it must match the
+  provider's discovery endpoint exactly.
+- `RADAR_OIDC_CLIENT_ID` and `RADAR_OIDC_CLIENT_SECRET`.
+- `RADAR_OIDC_REDIRECT_URL`: the redirect URI above.
+- At least one of `RADAR_OIDC_ALLOWED_EMAILS` (comma-separated addresses),
+  `RADAR_OIDC_ALLOWED_DOMAINS` (comma-separated email domains), or
+  `RADAR_OIDC_ALLOWED_SUBS` (subject identifiers). Signing in without a
+  matching allowlist entry is rejected with 403. Subject entries bypass the
+  email checks; otherwise the ID-token email must be verified.
+
+Optional:
+
+- `RADAR_OIDC_SCOPES`: defaults to `openid,profile,email`.
+- `RADAR_TRUST_PROXY=true`: when running behind an HTTPS reverse proxy that
+  sets `X-Forwarded-Proto`, session cookies are marked `Secure`.
+
+Deliberately token-free and unauthenticated: `/calendar/<RADAR_FEED_TOKEN>.ics`,
+`/healthz`, and `/metrics`. Calendar clients and Prometheus cannot run a
+browser flow; the feed token protects the calendar. Logout is local-only: it
+destroys the app session but the provider's SSO session persists.
+
+See [`config.example.env`](config.example.env) for the placeholder block.
 
 See [`config.example.env`](config.example.env) for a generic configuration.
 The original Munich AI use case is available at

@@ -45,6 +45,9 @@ func OpenStore(path string) (*SQLiteStore, error) {
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }
 
+// DB exposes the underlying connection pool, e.g. for the OIDC session store.
+func (s *SQLiteStore) DB() *sql.DB { return s.db }
+
 func (s *SQLiteStore) migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 		PRAGMA journal_mode=WAL;

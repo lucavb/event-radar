@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lucabecker/event-radar/internal/auth"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -18,16 +19,24 @@ const (
 )
 
 type Radar struct {
-	config   Config
-	store    Store
-	verifier Verifier
-	sources  []Source
-	mu       sync.Mutex
+	config        Config
+	store         Store
+	verifier      Verifier
+	sources       []Source
+	mu            sync.Mutex
+	authenticator *auth.Auth
 }
 
 func New(config Config, store Store, sources []Source, verifier Verifier) *Radar {
 	return &Radar{config: config, store: store, sources: sources, verifier: verifier}
 }
+
+// AttachAuth enables the OIDC-protected admin routes. Call before Handler();
+// construction phase only. A nil authenticator leaves OIDC disabled.
+func (r *Radar) AttachAuth(a *auth.Auth) { r.authenticator = a }
+
+// oidcEnabled reports whether the OIDC admin routes are registered.
+func (r *Radar) oidcEnabled() bool { return r.authenticator.Enabled() }
 
 func (r *Radar) Sync(ctx context.Context) error {
 	r.mu.Lock()
