@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -179,6 +180,9 @@ func (c Candidate) EventTitleOrTitle() string {
 	return c.Title
 }
 
+// handleAdminCandidate performs one review action on a candidate. The publish
+// gate and state transitions live in approval.go; this handler stays
+// responsible for auth, parsing, response mapping, and the redirect.
 func (r *Radar) handleAdminCandidate(writer http.ResponseWriter, request *http.Request) {
 	if !r.adminAuthorized(request) {
 		http.Error(writer, "admin token required", http.StatusUnauthorized)
@@ -188,39 +192,31 @@ func (r *Radar) handleAdminCandidate(writer http.ResponseWriter, request *http.R
 		http.Error(writer, "invalid form", http.StatusBadRequest)
 		return
 	}
-	candidate, err := r.Candidate(request.Context(), request.FormValue("url"))
-	if err != nil {
-		http.Error(writer, "candidate not found", http.StatusNotFound)
-		return
-	}
+	var err error
 	switch request.FormValue("action") {
 	case "approve":
-		if candidate.Verification != CandidateVerified || candidate.EventTitle == "" || candidate.StartTime.IsZero() || !candidate.StartTime.After(time.Now()) || candidate.Location == "" || candidate.EvidenceURL == "" || candidate.DateEvidence == "" || candidate.LocationEvidence == "" {
-			http.Error(writer, "candidate is not verified and cannot be approved", http.StatusBadRequest)
-			return
-		}
-		event := Event{Source: "reviewed-" + candidate.Source, SourceID: candidate.URL, Title: candidate.EventTitle, Description: candidate.Description, Location: candidate.Location, URL: candidate.EvidenceURL, StartsAt: candidate.StartTime, EndsAt: candidate.EndTime, Status: StatusTentative, Anchor: false, Score: candidate.Score}
-		if event.EndsAt.IsZero() {
-			event.EndsAt = event.StartsAt.Add(2 * time.Hour)
-		}
-		if err := r.store.UpsertEvent(request.Context(), event); err != nil {
-			http.Error(writer, "could not approve candidate", http.StatusInternalServerError)
-			return
-		}
-		candidate.Status = CandidateApproved
-		candidate.ReviewedAt = timePtr(time.Now().UTC())
+		_, err = ApproveCandidate(request.Context(), r.store, time.Now().UTC(), request.FormValue("url"))
 	case "reject":
-		candidate.Status = CandidateRejected
-		candidate.ReviewedAt = timePtr(time.Now().UTC())
+		_, err = RejectCandidate(request.Context(), r.store, time.Now().UTC(), request.FormValue("url"))
 	case "restore":
-		candidate.Status = CandidatePending
-		candidate.ReviewedAt = timePtr(time.Now().UTC())
+		_, err = RestoreCandidate(request.Context(), r.store, time.Now().UTC(), request.FormValue("url"))
 	default:
 		http.Error(writer, "unknown action", http.StatusBadRequest)
 		return
 	}
-	if err := r.UpdateCandidate(request.Context(), candidate); err != nil {
-		http.Error(writer, "could not update candidate", http.StatusInternalServerError)
+	if err != nil {
+		switch {
+		case isApprovalGateError(err):
+			http.Error(writer, "candidate is not verified and cannot be approved", http.StatusBadRequest)
+		case errors.Is(err, errCandidateLookup):
+			http.Error(writer, "candidate not found", http.StatusNotFound)
+		case errors.Is(err, errCandidateUpdate):
+			http.Error(writer, "could not update candidate", http.StatusInternalServerError)
+		default:
+			// Only approving persists an event, so this branch is reachable
+			// from approve alone.
+			http.Error(writer, "could not approve candidate", http.StatusInternalServerError)
+		}
 		return
 	}
 	http.Redirect(writer, request, "/admin?token="+request.FormValue("token"), http.StatusSeeOther)

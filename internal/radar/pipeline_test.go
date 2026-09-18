@@ -27,11 +27,13 @@ func (s *stubSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) {
 
 // fakeStore is an in-memory Store implementing only the pipeline seam.
 type fakeStore struct {
-	health         []SourceHealth
-	events         []Event
-	candidates     []Candidate
-	saveHealthErr  error
-	upsertEventErr error
+	health             []SourceHealth
+	events             []Event
+	candidates         []Candidate
+	updates            []Candidate
+	saveHealthErr      error
+	upsertEventErr     error
+	updateCandidateErr error
 }
 
 func (s *fakeStore) PruneCandidates(ctx context.Context, now time.Time) error { return nil }
@@ -86,7 +88,13 @@ func (s *fakeStore) Candidate(ctx context.Context, rawURL string) (Candidate, er
 	return Candidate{}, errors.New("not found")
 }
 
-func (s *fakeStore) UpdateCandidate(ctx context.Context, candidate Candidate) error { return nil }
+func (s *fakeStore) UpdateCandidate(ctx context.Context, candidate Candidate) error {
+	if s.updateCandidateErr != nil {
+		return s.updateCandidateErr
+	}
+	s.updates = append(s.updates, candidate)
+	return nil
+}
 
 func (s *fakeStore) CandidateCounts(ctx context.Context) (map[string]int, error) {
 	return map[string]int{CandidatePending: len(s.candidates)}, nil
