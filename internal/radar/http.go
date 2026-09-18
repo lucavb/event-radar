@@ -10,16 +10,20 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func (r *Radar) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", r.handleHealth)
-	mux.HandleFunc("GET /metrics", r.handleMetrics)
-	mux.HandleFunc("GET /status", r.handleStatus)
-	mux.HandleFunc("GET /calendar/", r.handleCalendar)
-	mux.HandleFunc("GET /admin", r.handleAdmin)
-	mux.HandleFunc("POST /admin/candidate", r.handleAdminCandidate)
+	mux.Handle("GET /healthz", http.HandlerFunc(r.handleHealth))
+	mux.Handle("GET /metrics", http.HandlerFunc(r.handleMetrics))
+	mux.Handle("GET /status", otelhttp.NewHandler(http.HandlerFunc(r.handleStatus), "GET /status"))
+	// /calendar/ is not traced: the feed token is part of the URL path, and
+	// otelhttp would record it in span URL attributes.
+	mux.Handle("GET /calendar/", http.HandlerFunc(r.handleCalendar))
+	mux.Handle("GET /admin", otelhttp.NewHandler(http.HandlerFunc(r.handleAdmin), "GET /admin"))
+	mux.Handle("POST /admin/candidate", otelhttp.NewHandler(http.HandlerFunc(r.handleAdminCandidate), "POST /admin/candidate"))
 	return mux
 }
 

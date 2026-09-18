@@ -6,6 +6,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type Radar struct {
@@ -23,9 +27,22 @@ func (r *Radar) Sync(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	tracer := otel.Tracer("event-radar")
+	syncCtx, span := tracer.Start(ctx, "radar.sync")
+	defer span.End()
+	err := r.runSync(syncCtx)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
+}
+
+func (r *Radar) runSync(ctx context.Context) error {
 	if err := r.store.PruneCandidates(ctx, time.Now().UTC()); err != nil {
 		return fmt.Errorf("prune candidates: %w", err)
 	}
+	tracer := otel.Tracer("event-radar")
 	var failures []error
 	var verifier *GeminiSource
 	for _, source := range r.sources {
@@ -46,7 +63,14 @@ func (r *Radar) Sync(ctx context.Context) error {
 			continue
 		}
 
-		events, candidates, err := source.Fetch(ctx)
+		fetchCtx, fetchSpan := tracer.Start(ctx, "source.fetch")
+		fetchSpan.SetAttributes(attribute.String("source.name", source.Name()))
+		events, candidates, err := source.Fetch(fetchCtx)
+		if err != nil {
+			fetchSpan.RecordError(err)
+			fetchSpan.SetStatus(codes.Error, err.Error())
+		}
+		fetchSpan.End()
 		if err != nil {
 			health.State, health.LastError = "error", err.Error()
 			if strings.Contains(source.Name(), "discovery") {

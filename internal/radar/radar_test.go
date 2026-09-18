@@ -168,3 +168,60 @@ func TestUnverifiedCandidateRemainsReviewable(t *testing.T) {
 		t.Fatalf("candidates = %#v", candidates)
 	}
 }
+
+func TestLoadConfigLoggingDefaults(t *testing.T) {
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.LogFormat != "text" || config.LogLevel != "info" {
+		t.Fatalf("logging defaults = %q/%q, want text/info", config.LogFormat, config.LogLevel)
+	}
+	t.Setenv("RADAR_LOG_FORMAT", "json")
+	t.Setenv("RADAR_LOG_LEVEL", "debug")
+	config, err = LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.LogFormat != "json" || config.LogLevel != "debug" {
+		t.Fatalf("logging config = %q/%q, want json/debug", config.LogFormat, config.LogLevel)
+	}
+}
+
+func TestValidateLoggingAllowlist(t *testing.T) {
+	base := Config{
+		DatabasePath: "events.db", FeedToken: "secret", ListenAddress: "127.0.0.1:0",
+		SyncInterval: time.Hour, HTTPTimeout: time.Second, Timezone: "UTC",
+		ICSFeeds: []ICSFeedConfig{{Name: "feed", URL: "https://example.test/events.ics"}},
+	}
+	for _, test := range []struct {
+		name                   string
+		format, level, tracing string
+		want                   string
+	}{
+		{name: "defaults"},
+		{name: "json debug", format: "json", level: "debug"},
+		{name: "text warn", format: "text", level: "warn"},
+		{name: "empty format", format: ""},
+		{name: "empty level", level: ""},
+		{name: "tracing enabled", tracing: "true"},
+		{name: "bad format", format: "yaml", want: "RADAR_LOG_FORMAT"},
+		{name: "bad level", level: "verbose", want: "RADAR_LOG_LEVEL"},
+		{name: "bad tracing", tracing: "yes", want: "RADAR_TRACING_ENABLED"},
+	} {
+		config := base
+		config.LogFormat = test.format
+		config.LogLevel = test.level
+		config.TracingEnabled = test.tracing
+		err := config.Validate()
+		if test.want == "" {
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", test.name, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("%s: validation error = %v", test.name, err)
+		}
+	}
+}

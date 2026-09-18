@@ -1,6 +1,7 @@
 package radar
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -8,6 +9,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 )
 
 func RenderICS(config Config, events []Event) string {
@@ -70,7 +74,18 @@ func DigestHash(content string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func SendDigest(config Config, content string, dryRun bool) error {
+func SendDigest(ctx context.Context, config Config, content string, dryRun bool) error {
+	_, span := otel.Tracer("event-radar").Start(ctx, "smtp.send")
+	defer span.End()
+	if err := sendDigest(config, content, dryRun); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	return nil
+}
+
+func sendDigest(config Config, content string, dryRun bool) error {
 	if dryRun {
 		return nil
 	}

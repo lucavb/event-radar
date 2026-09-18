@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type Source interface {
@@ -260,7 +262,7 @@ func firstString(record map[string]any, keys ...string) (string, bool) {
 }
 
 func SourcesFromConfig(config Config) []Source {
-	client := &http.Client{Timeout: config.HTTPTimeout}
+	client := &http.Client{Timeout: config.HTTPTimeout, Transport: otelhttp.NewTransport(http.DefaultTransport)}
 	sources := make([]Source, 0, len(config.ICSFeeds)+3)
 	aliases := cleanList(config.LocationAliases)
 	for _, feed := range config.ICSFeeds {
@@ -280,7 +282,7 @@ func SourcesFromConfig(config Config) []Source {
 		sources = append(sources, GeminiSource{
 			endpoint: config.GeminiEndpoint, discoveryQueries: config.GeminiDiscoveryQueries, criteria: config.EventCriteria, timezone: config.Timezone, weights: config.RelevanceWeights,
 			apiKey: config.GeminiAPIKey, token: config.GeminiToken,
-			timeout: config.GeminiTimeout, client: &http.Client{Timeout: config.GeminiTimeout},
+			timeout: config.GeminiTimeout, client: &http.Client{Timeout: config.GeminiTimeout, Transport: otelhttp.NewTransport(http.DefaultTransport)},
 		})
 	}
 	return sources

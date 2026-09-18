@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type GeminiSource struct {
@@ -173,6 +176,8 @@ func structuredJSON(raw string) string {
 }
 
 func (s GeminiSource) discover(ctx context.Context, prompt string) ([]Candidate, error) {
+	tctx, span := otel.Tracer("event-radar").Start(ctx, "gemini.discover")
+	defer span.End()
 	itemSchema := map[string]any{
 		"type": "object", "properties": map[string]any{
 			"title":   map[string]any{"type": "string"},
@@ -183,8 +188,10 @@ func (s GeminiSource) discover(ctx context.Context, prompt string) ([]Candidate,
 	schema := map[string]any{"type": "object", "properties": map[string]any{
 		"candidates": map[string]any{"type": "array", "items": itemSchema},
 	}, "required": []string{"candidates"}}
-	result, err := s.request(ctx, prompt, schema, []map[string]any{{"google_search": map[string]any{}}})
+	result, err := s.request(tctx, prompt, schema, []map[string]any{{"google_search": map[string]any{}}})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	raw, _ := result["candidates"].([]any)
@@ -208,6 +215,8 @@ func (s GeminiSource) discover(ctx context.Context, prompt string) ([]Candidate,
 }
 
 func (s GeminiSource) verify(ctx context.Context, candidate Candidate) (Candidate, error) {
+	tctx, span := otel.Tracer("event-radar").Start(ctx, "gemini.verify")
+	defer span.End()
 	schema := map[string]any{"type": "object", "properties": map[string]any{
 		"is_specific_event": map[string]any{"type": "boolean"},
 		"title":             map[string]any{"type": "string"},
@@ -225,21 +234,32 @@ func (s GeminiSource) verify(ctx context.Context, candidate Candidate) (Candidat
 		zone = time.UTC
 	}
 	prompt := fmt.Sprintf("Verify this exact event page: %s. Today is %s. Accept only one specific future event matching this criteria: %s. Require an explicit date, start time, venue or location, event URL, and short verbatim date and location evidence. Do not infer missing facts.", candidate.URL, time.Now().In(zone).Format("2006-01-02"), s.criteria)
-	result, err := s.request(ctx, prompt, schema, []map[string]any{{"url_context": map[string]any{}}})
+	result, err := s.request(tctx, prompt, schema, []map[string]any{{"url_context": map[string]any{}}})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return candidate, err
 	}
 	specific, _ := result["is_specific_event"].(bool)
 	if !specific {
 		reason, _ := result["rejection_reason"].(string)
-		return candidate, fmt.Errorf("not a specific event: %s", reason)
+		err := fmt.Errorf("not a specific event: %s", reason)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return candidate, err
 	}
 	start, err := time.Parse(time.RFC3339, stringValue(result, "start_time"))
 	if err != nil {
-		return candidate, fmt.Errorf("invalid verified start time: %w", err)
+		err = fmt.Errorf("invalid verified start time: %w", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return candidate, err
 	}
 	if !start.After(time.Now().UTC()) {
-		return candidate, fmt.Errorf("verified event is not in the future")
+		err := fmt.Errorf("verified event is not in the future")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return candidate, err
 	}
 	end, _ := time.Parse(time.RFC3339, stringValue(result, "end_time"))
 	title := stringValue(result, "title")
@@ -248,7 +268,10 @@ func (s GeminiSource) verify(ctx context.Context, candidate Candidate) (Candidat
 	if title == "" || location == "" || eventURL == "" ||
 		stringValue(result, "date_evidence") == "" ||
 		stringValue(result, "location_evidence") == "" {
-		return candidate, fmt.Errorf("verified event is missing specific date, location, URL, or evidence")
+		err := fmt.Errorf("verified event is missing specific date, location, URL, or evidence")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return candidate, err
 	}
 	candidate.EventTitle = title
 	candidate.StartTime = start

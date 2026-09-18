@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,9 @@ type Config struct {
 	SMTPPassword           string
 	SMTPFrom               string
 	DigestRecipient        string
+	LogFormat              string
+	LogLevel               string
+	TracingEnabled         string
 }
 
 func LoadConfig() (Config, error) {
@@ -111,6 +115,9 @@ func LoadConfig() (Config, error) {
 		SMTPPassword:           os.Getenv("RADAR_SMTP_PASSWORD"),
 		SMTPFrom:               os.Getenv("RADAR_SMTP_FROM"),
 		DigestRecipient:        os.Getenv("RADAR_DIGEST_RECIPIENT"),
+		LogFormat:              stringEnv("RADAR_LOG_FORMAT", "text"),
+		LogLevel:               stringEnv("RADAR_LOG_LEVEL", "info"),
+		TracingEnabled:         stringEnv("RADAR_TRACING_ENABLED", ""),
 	}, nil
 }
 
@@ -120,6 +127,15 @@ func (c Config) Validate() error {
 	}
 	if c.SyncInterval <= 0 || c.HTTPTimeout <= 0 {
 		return fmt.Errorf("sync interval and HTTP timeout must be positive")
+	}
+	if !slices.Contains([]string{"", "text", "json"}, c.LogFormat) {
+		return fmt.Errorf("RADAR_LOG_FORMAT must be empty, text, or json")
+	}
+	if !slices.Contains([]string{"", "debug", "info", "warn", "error"}, c.LogLevel) {
+		return fmt.Errorf("RADAR_LOG_LEVEL must be empty, debug, info, warn, or error")
+	}
+	if !slices.Contains([]string{"", "true"}, c.TracingEnabled) {
+		return fmt.Errorf("RADAR_TRACING_ENABLED must be empty or true")
 	}
 	if _, err := time.LoadLocation(c.Timezone); err != nil {
 		return fmt.Errorf("RADAR_TIMEZONE: %w", err)
