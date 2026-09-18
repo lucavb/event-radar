@@ -89,6 +89,41 @@ docker run --env-file .env -p 8080:8080 ghcr.io/lucavb/event-radar:sha-<commit>
 The repository contains no deployment, DNS, backup, or calendar-subscription
 automation.
 
+## Observability
+
+Logging and tracing are configured through environment variables.
+
+- `RADAR_LOG_FORMAT=json`: structured JSON logs, ready for ingestion by Loki.
+  The default format is plain text.
+- `RADAR_LOG_LEVEL`: `debug`, `info`, `warn`, or `error`. The default is
+  `info`.
+
+Tracing is opt-in and adds no overhead when disabled:
+
+- `RADAR_TRACING_ENABLED=true`: export spans over OTLP. The receiver is
+  configured with standard OpenTelemetry variables:
+  - `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP receiver, for example
+    `http://localhost:4318` (Alloy).
+  - `OTEL_SERVICE_NAME`: service name attached to spans. The default is
+    `event-radar`.
+  - `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG`: for example
+    `parentbased_traceidratio` with `0.1` to sample 10% of traces.
+
+The `/healthz` and `/metrics` probe routes are deliberately not traced, and
+neither is `/calendar/` — its URL path contains the feed token, which tracing
+would record in span attributes. When a trace is active, logs carry `trace_id`
+and `span_id` fields so spans and log lines can be correlated.
+
+In Grafana, enable log-to-trace navigation in both directions:
+
+1. Tempo datasource → Trace to logs → select Loki, enable "Filter by trace
+   ID", and map `service.name` to `service_name`.
+2. Loki datasource → Derived fields → regex `"trace_id":"([a-f0-9]+)"` →
+   internal link to Tempo with `${__value.raw}`.
+
+A runnable tracing stack (Tempo, Alloy, Grafana) is available at
+[`examples/observability`](examples/observability).
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE).

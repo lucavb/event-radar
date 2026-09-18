@@ -1,0 +1,22 @@
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        # Explicit 0.0.0.0 binding is required: Tempo 2.7+/3.x defaults the
+        # OTLP receivers to loopback, which silently breaks container
+        # networking.
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /tmp/tempo/blocks
+    wal:
+      path: /tmp/tempo/wal
