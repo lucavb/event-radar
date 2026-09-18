@@ -10,15 +10,32 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type Store struct{ db *sql.DB }
+// Store is the persistence seam the sync pipeline and server depend on.
+type Store interface {
+	PruneCandidates(ctx context.Context, now time.Time) error
+	SaveSourceHealth(ctx context.Context, health SourceHealth) error
+	SourceHealth(ctx context.Context) ([]SourceHealth, error)
+	UpsertEvent(ctx context.Context, event Event) error
+	UpcomingEvents(ctx context.Context, from time.Time) ([]Event, error)
+	AllEvents(ctx context.Context) ([]Event, error)
+	UpsertCandidate(ctx context.Context, candidate Candidate) error
+	Candidates(ctx context.Context, includeRejected bool) ([]Candidate, error)
+	Candidate(ctx context.Context, rawURL string) (Candidate, error)
+	UpdateCandidate(ctx context.Context, candidate Candidate) error
+	CandidateCounts(ctx context.Context) (map[string]int, error)
+}
 
-func OpenStore(path string) (*Store, error) {
+// SQLiteStore is the concrete SQLite implementation of Store. The digest
+// command also calls DeliveryChanged and MarkDelivered directly on it.
+type SQLiteStore struct{ db *sql.DB }
+
+func OpenStore(path string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	store := &Store{db: db}
+	store := &SQLiteStore{db: db}
 	if err := store.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -26,9 +43,9 @@ func OpenStore(path string) (*Store, error) {
 	return store, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *SQLiteStore) Close() error { return s.db.Close() }
 
-func (s *Store) migrate(ctx context.Context) error {
+func (s *SQLiteStore) migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 		PRAGMA journal_mode=WAL;
 		CREATE TABLE IF NOT EXISTS events (
@@ -94,7 +111,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) UpsertEvent(ctx context.Context, event Event) error {
+func (s *SQLiteStore) UpsertEvent(ctx context.Context, event Event) error {
 	now := time.Now().UTC()
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = now
@@ -117,17 +134,17 @@ func (s *Store) UpsertEvent(ctx context.Context, event Event) error {
 	return err
 }
 
-func (s *Store) UpcomingEvents(ctx context.Context, from time.Time) ([]Event, error) {
+func (s *SQLiteStore) UpcomingEvents(ctx context.Context, from time.Time) ([]Event, error) {
 	return s.queryEvents(ctx, `SELECT uid, source, source_id, title, description, location, url, starts_at, ends_at, status, anchor, score, created_at, updated_at FROM events WHERE starts_at >= ? ORDER BY starts_at`, from.UTC().Format(time.RFC3339))
 }
 
 // AllEvents returns every stored event, past and future, so the calendar
 // feed keeps history visible instead of dropping events once they start.
-func (s *Store) AllEvents(ctx context.Context) ([]Event, error) {
+func (s *SQLiteStore) AllEvents(ctx context.Context) ([]Event, error) {
 	return s.queryEvents(ctx, `SELECT uid, source, source_id, title, description, location, url, starts_at, ends_at, status, anchor, score, created_at, updated_at FROM events ORDER BY starts_at`)
 }
 
-func (s *Store) queryEvents(ctx context.Context, query string, args ...any) ([]Event, error) {
+func (s *SQLiteStore) queryEvents(ctx context.Context, query string, args ...any) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -151,7 +168,7 @@ func (s *Store) queryEvents(ctx context.Context, query string, args ...any) ([]E
 	return events, rows.Err()
 }
 
-func (s *Store) PruneCandidates(ctx context.Context, now time.Time) error {
+func (s *SQLiteStore) PruneCandidates(ctx context.Context, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM candidates
 		WHERE status <> 'approved'
 		AND verification = 'verified'
@@ -160,7 +177,7 @@ func (s *Store) PruneCandidates(ctx context.Context, now time.Time) error {
 	return err
 }
 
-func (s *Store) SaveSourceHealth(ctx context.Context, health SourceHealth) error {
+func (s *SQLiteStore) SaveSourceHealth(ctx context.Context, health SourceHealth) error {
 	var success any
 	if health.LastSuccess != nil {
 		success = health.LastSuccess.UTC().Format(time.RFC3339)
@@ -169,7 +186,7 @@ func (s *Store) SaveSourceHealth(ctx context.Context, health SourceHealth) error
 	return err
 }
 
-func (s *Store) SourceHealth(ctx context.Context) ([]SourceHealth, error) {
+func (s *SQLiteStore) SourceHealth(ctx context.Context) ([]SourceHealth, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT name, enabled, state, last_success, last_error FROM source_health ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -196,7 +213,7 @@ func (s *Store) SourceHealth(ctx context.Context) ([]SourceHealth, error) {
 	return output, rows.Err()
 }
 
-func (s *Store) UpsertCandidate(ctx context.Context, candidate Candidate) error {
+func (s *SQLiteStore) UpsertCandidate(ctx context.Context, candidate Candidate) error {
 	if candidate.Status == "" {
 		candidate.Status = CandidatePending
 	}
@@ -250,7 +267,7 @@ func formatOptionalTimePtr(value *time.Time) any {
 	return value.UTC().Format(time.RFC3339)
 }
 
-func (s *Store) Candidates(ctx context.Context, includeRejected bool) ([]Candidate, error) {
+func (s *SQLiteStore) Candidates(ctx context.Context, includeRejected bool) ([]Candidate, error) {
 	query := `SELECT source, url, title, snippet, score, discovered_at, status, verification,
 		event_title, start_time, end_time, location, description, evidence_url,
 		date_evidence, location_evidence, confidence, last_error, verified_at,
@@ -297,7 +314,7 @@ func (s *Store) Candidates(ctx context.Context, includeRejected bool) ([]Candida
 	return output, rows.Err()
 }
 
-func (s *Store) UpdateCandidate(ctx context.Context, candidate Candidate) error {
+func (s *SQLiteStore) UpdateCandidate(ctx context.Context, candidate Candidate) error {
 	if candidate.Status == "" {
 		candidate.Status = CandidatePending
 	}
@@ -313,7 +330,7 @@ func (s *Store) UpdateCandidate(ctx context.Context, candidate Candidate) error 
 	return err
 }
 
-func (s *Store) Candidate(ctx context.Context, rawURL string) (Candidate, error) {
+func (s *SQLiteStore) Candidate(ctx context.Context, rawURL string) (Candidate, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT source, url, title, snippet, score, discovered_at, status, verification,
 		event_title, start_time, end_time, location, description, evidence_url, date_evidence,
 		location_evidence, confidence, last_error, verified_at, reviewed_at, review_note
@@ -357,7 +374,7 @@ func (s *Store) Candidate(ctx context.Context, rawURL string) (Candidate, error)
 	return candidate, nil
 }
 
-func (s *Store) CandidateCounts(ctx context.Context) (map[string]int, error) {
+func (s *SQLiteStore) CandidateCounts(ctx context.Context) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM candidates GROUP BY status`)
 	if err != nil {
 		return nil, err
@@ -375,7 +392,7 @@ func (s *Store) CandidateCounts(ctx context.Context) (map[string]int, error) {
 	return counts, rows.Err()
 }
 
-func (s *Store) DeliveryChanged(ctx context.Context, kind, contentHash string) (bool, error) {
+func (s *SQLiteStore) DeliveryChanged(ctx context.Context, kind, contentHash string) (bool, error) {
 	var previous string
 	err := s.db.QueryRowContext(ctx, `SELECT content_hash FROM deliveries WHERE kind = ?`, kind).Scan(&previous)
 	if err == sql.ErrNoRows {
@@ -384,7 +401,7 @@ func (s *Store) DeliveryChanged(ctx context.Context, kind, contentHash string) (
 	return previous != contentHash, err
 }
 
-func (s *Store) MarkDelivered(ctx context.Context, kind, contentHash string) error {
+func (s *SQLiteStore) MarkDelivered(ctx context.Context, kind, contentHash string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO deliveries(kind, content_hash, delivered_at) VALUES (?, ?, ?) ON CONFLICT(kind) DO UPDATE SET content_hash=excluded.content_hash, delivered_at=excluded.delivered_at`, kind, contentHash, time.Now().UTC().Format(time.RFC3339))
 	return err
 }

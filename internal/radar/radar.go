@@ -12,15 +12,21 @@ import (
 	"go.opentelemetry.io/otel/codes"
 )
 
+const (
+	maxGeminiCandidates           = 8
+	geminiVerificationConcurrency = 3
+)
+
 type Radar struct {
-	config  Config
-	store   *Store
-	sources []Source
-	mu      sync.Mutex
+	config   Config
+	store    Store
+	verifier Verifier
+	sources  []Source
+	mu       sync.Mutex
 }
 
-func New(config Config, store *Store, sources []Source) *Radar {
-	return &Radar{config: config, store: store, sources: sources}
+func New(config Config, store Store, sources []Source, verifier Verifier) *Radar {
+	return &Radar{config: config, store: store, sources: sources, verifier: verifier}
 }
 
 func (r *Radar) Sync(ctx context.Context) error {
@@ -44,14 +50,6 @@ func (r *Radar) runSync(ctx context.Context) error {
 	}
 	tracer := otel.Tracer("event-radar")
 	var failures []error
-	var verifier *GeminiSource
-	for _, source := range r.sources {
-		if gemini, ok := source.(GeminiSource); ok && gemini.Enabled() {
-			copy := gemini
-			verifier = &copy
-			break
-		}
-	}
 	for _, source := range r.sources {
 		health := SourceHealth{Name: source.Name(), Enabled: source.Enabled()}
 		if !source.Enabled() {
@@ -95,9 +93,7 @@ func (r *Radar) runSync(ctx context.Context) error {
 				failures = append(failures, fmt.Errorf("%s event %q: %w", source.Name(), event.Title, err))
 			}
 		}
-		if verifier != nil && source.Name() != verifier.Name() {
-			candidates = verifyCandidates(ctx, *verifier, candidates)
-		}
+		candidates = verifyCandidates(ctx, r.verifier, candidates)
 		for _, candidate := range candidates {
 			if err := r.store.UpsertCandidate(ctx, candidate); err != nil {
 				failures = append(failures, fmt.Errorf("%s candidate %q: %w", source.Name(), candidate.Title, err))
@@ -110,7 +106,13 @@ func (r *Radar) runSync(ctx context.Context) error {
 	return nil
 }
 
-func verifyCandidates(ctx context.Context, verifier GeminiSource, candidates []Candidate) []Candidate {
+// verifyCandidates is the pipeline's single verification fan-out. It caps the
+// batch, skips candidates that already carry a start time, and verifies the
+// rest under a bounded concurrency.
+func verifyCandidates(ctx context.Context, verifier Verifier, candidates []Candidate) []Candidate {
+	if verifier == nil {
+		return candidates
+	}
 	if len(candidates) > maxGeminiCandidates {
 		candidates = candidates[:maxGeminiCandidates]
 	}

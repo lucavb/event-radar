@@ -8,12 +8,17 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 )
+
+// Verifier enriches a discovered candidate with a date, venue, and evidence.
+// Gemini is the only verifier today.
+type Verifier interface {
+	VerifyCandidate(ctx context.Context, candidate Candidate) Candidate
+}
 
 type GeminiSource struct {
 	endpoint         string
@@ -35,8 +40,8 @@ func (s GeminiSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) {
 		return nil, nil, nil
 	}
 	// Keep a source-wide budget, while giving each upstream call its own
-	// timeout. Verification is bounded and concurrent so one slow page cannot
-	// consume the entire sync deadline.
+	// timeout. Verification is bounded and concurrent in the sync pipeline so
+	// one slow page cannot consume the entire sync deadline.
 	ctx, cancel := context.WithTimeout(ctx, 2*s.timeout+time.Minute)
 	defer cancel()
 	var candidates []Candidate
@@ -59,32 +64,8 @@ func (s GeminiSource) Fetch(ctx context.Context) ([]Event, []Candidate, error) {
 		seen[candidate.URL] = true
 		unique = append(unique, candidate)
 	}
-	if len(unique) > maxGeminiCandidates {
-		unique = unique[:maxGeminiCandidates]
-	}
-	results := make([]Candidate, len(unique))
-	copy(results, unique)
-	sem := make(chan struct{}, geminiVerificationConcurrency)
-	var waitGroup sync.WaitGroup
-	for index := range results {
-		waitGroup.Add(1)
-		go func(index int) {
-			defer waitGroup.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			requestCtx, requestCancel := context.WithTimeout(ctx, s.timeout)
-			defer requestCancel()
-			verified, err := s.verify(requestCtx, results[index])
-			if err != nil {
-				results[index].Verification = "failed"
-				results[index].LastError = err.Error()
-				return
-			}
-			results[index] = verified
-		}(index)
-	}
-	waitGroup.Wait()
-	return nil, results, nil
+	// Candidates are returned unverified; the pipeline owns verification.
+	return nil, unique, nil
 }
 
 // VerifyCandidate enriches a candidate discovered by another provider with a
@@ -100,11 +81,6 @@ func (s GeminiSource) VerifyCandidate(ctx context.Context, candidate Candidate) 
 	}
 	return verified
 }
-
-const (
-	maxGeminiCandidates           = 8
-	geminiVerificationConcurrency = 3
-)
 
 type geminiEnvelope struct {
 	Candidates []struct {

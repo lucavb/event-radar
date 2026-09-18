@@ -58,7 +58,8 @@ func run(args []string) error {
 		return err
 	}
 	defer func() { _ = store.Close() }()
-	app := radar.New(config, store, radar.SourcesFromConfig(config))
+	sources, verifier := radar.SourcesFromConfig(config)
+	app := radar.New(config, store, sources, verifier)
 	ctx := context.Background()
 
 	switch command {

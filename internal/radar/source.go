@@ -261,7 +261,7 @@ func firstString(record map[string]any, keys ...string) (string, bool) {
 	return "", false
 }
 
-func SourcesFromConfig(config Config) []Source {
+func SourcesFromConfig(config Config) ([]Source, Verifier) {
 	client := &http.Client{Timeout: config.HTTPTimeout, Transport: otelhttp.NewTransport(http.DefaultTransport)}
 	sources := make([]Source, 0, len(config.ICSFeeds)+3)
 	aliases := cleanList(config.LocationAliases)
@@ -278,14 +278,19 @@ func SourcesFromConfig(config Config) []Source {
 	if config.SearXNGURL != "" {
 		sources = append(sources, SearXNGSource{endpoint: config.SearXNGURL, queries: config.SearXNGQueries, weights: config.RelevanceWeights, client: client})
 	}
+	var verifier Verifier
 	if config.GeminiEndpoint != "" {
-		sources = append(sources, GeminiSource{
+		gemini := GeminiSource{
 			endpoint: config.GeminiEndpoint, discoveryQueries: config.GeminiDiscoveryQueries, criteria: config.EventCriteria, timezone: config.Timezone, weights: config.RelevanceWeights,
 			apiKey: config.GeminiAPIKey, token: config.GeminiToken,
 			timeout: config.GeminiTimeout, client: &http.Client{Timeout: config.GeminiTimeout, Transport: otelhttp.NewTransport(http.DefaultTransport)},
-		})
+		}
+		sources = append(sources, gemini)
+		if gemini.Enabled() {
+			verifier = gemini
+		}
 	}
-	return sources
+	return sources, verifier
 }
 
 func ParseICS(raw, source string, anchor bool) ([]Event, error) {

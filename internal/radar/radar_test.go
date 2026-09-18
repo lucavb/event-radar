@@ -82,7 +82,7 @@ func TestCalendarFeedKeepsPastEvents(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("all events = %d, want 2", len(all))
 	}
-	app := New(Config{AppName: "Event Radar", CalendarProdID: "-//Event Radar//EN", Timezone: "UTC", FeedToken: "test-token"}, store, nil)
+	app := New(Config{AppName: "Event Radar", CalendarProdID: "-//Event Radar//EN", Timezone: "UTC", FeedToken: "test-token"}, store, nil, nil)
 	recorder := httptest.NewRecorder()
 	app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/calendar/test-token.ics", nil))
 	if recorder.Code != http.StatusOK {
@@ -148,8 +148,24 @@ func TestGeminiSourceDiscoversAndVerifiesStructuredCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 1 || candidates[0].Verification != CandidateVerified || candidates[0].EventTitle != "Munich AI Night" {
-		t.Fatalf("candidates = %#v", candidates)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(candidates))
+	}
+	if !candidates[0].StartTime.IsZero() {
+		t.Fatal("expected unverified candidate, got non-zero StartTime")
+	}
+	if candidates[0].Title != "Munich AI Night" || candidates[0].URL != "https://example.test/event" {
+		t.Fatalf("discovered candidate = %#v", candidates[0])
+	}
+	if candidates[0].Verification != "" || candidates[0].EventTitle != "" {
+		t.Fatalf("candidate must be unverified from Fetch, got %#v", candidates[0])
+	}
+	verified := source.VerifyCandidate(context.Background(), candidates[0])
+	if verified.Verification != CandidateVerified || verified.EventTitle != "Munich AI Night" {
+		t.Fatalf("verified candidate = %#v", verified)
+	}
+	if verified.StartTime.IsZero() || verified.DateEvidence == "" || verified.LocationEvidence == "" {
+		t.Fatalf("verified candidate missing enrichment: %#v", verified)
 	}
 }
 
